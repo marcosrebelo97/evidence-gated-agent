@@ -110,7 +110,11 @@ destacados na notificação para o revisor (`attentionPaths`).
   novo a cada run — tokens, credenciais de nuvem, o agente SSH e os dotfiles do
   usuário (`~/.gitconfig`, `~/.npmrc`, `~/.ssh`) não chegam a eles. O Claude Code
   autentica por `ANTHROPIC_API_KEY` ou `CLAUDE_CODE_OAUTH_TOKEN` liberados em
-  `agent.passEnv`. O git lá dentro roda com `protocol.allow=never`, o que barra
+  `agent.passEnv`; sem nenhum dos dois, o poll recusa começar, em vez de
+  falhar em toda solicitação. Os runs isolados compartilham só o cache do npm,
+  para não baixar tudo de novo. O setup sobre a base intacta, antes do agente,
+  é código confiável e mantém o `HOME` do usuário (chaves SSH, tokens de
+  registry). O git lá dentro roda com `protocol.allow=never`, o que barra
   o `git push` do agente; um script escrito por ele pode desfazer essa variável,
   e contra isso vale o isolamento de sistema (abaixo).
 - **Nada do repositório do agente executa do lado do orquestrador**: o agente
@@ -118,9 +122,16 @@ destacados na notificação para o revisor (`attentionPaths`).
   ponteiro `.git` dele não são os do clone principal. O orquestrador traz o
   commit com `git fetch` (o `upload-pack` não executa a config nem os hooks do
   repositório servido) e, quando precisa rodar git lá dentro (`status`, o
-  checkout da verificação), usa o ambiente do sandbox, sem a config global do
-  usuário. Os próprios comandos git do orquestrador ainda rodam sem hooks e sem
-  fsmonitor, e o push usa `--no-verify`.
+  checkout da verificação), usa o ambiente do sandbox, um `HOME` descartável e
+  nenhuma config global — um filtro plantado pelo agente roda sem privilégio e
+  não alcança os dotfiles do usuário. Repositórios novos nascem sem os hooks de
+  template do usuário. Os comandos git do orquestrador rodam sem hooks e sem
+  fsmonitor.
+- **Push só para onde o remote apontava**: o `fetch` anota os push URLs do
+  remote (já com regras `insteadOf` aplicadas) antes do agente rodar. O push vai
+  para esses URLs, com `--no-verify`, e é recusado se eles mudaram durante o
+  run — um remote reescrito ou um `pushInsteadOf` plantado param a publicação
+  em vez de desviá-la.
 - **Ferramentas restritas**: por padrão o agente ignora configurações e
   servidores MCP do usuário (`--setting-sources project`,
   `--strict-mcp-config`); a configuração de exemplo libera só leitura, edição,
@@ -207,9 +218,10 @@ Cada tentativa guarda tudo o que é preciso para reconstruir a decisão:
 ```
 
 Os repositórios dos agentes ficam em `workspaces/<id>` (com o `HOME` ao lado,
-em `<id>.home`), e o commit coletado de cada um fica no clone principal em
-`refs/evidence-gated-agent/<id>`. Um `retry` cria uma nova pasta de tentativa;
-a anterior é preservada. O
+em `<id>.home`). O commit coletado passa por `refs/evidence-gated-agent/<id>`
+no clone principal só durante o run: a ref é apagada no fim, e o SHA fica no
+ledger e no `evidence.json`. Um `retry` cria uma nova pasta de tentativa; a
+anterior é preservada. O
 `workDir` fica fora do repositório alvo e do orquestrador por padrão — o Claude
 Code lê `CLAUDE.md` subindo pelas pastas, e o agente não pode herdar as
 instruções erradas.
@@ -221,7 +233,8 @@ Requisitos: Node.js 20+, git 2.29+ e o
 poll. Como o agente roda com um `HOME` vazio, a autenticação vem do ambiente:
 `ANTHROPIC_API_KEY`, ou `CLAUDE_CODE_OAUTH_TOKEN` gerado com
 `claude setup-token` para quem usa assinatura — os dois já estão em
-`agent.passEnv` no exemplo.
+`agent.passEnv` por padrão. Para usar o login guardado em `~/.claude`, desligue
+o isolamento com `"isolateHome": false`.
 
 ```bash
 npm install
@@ -239,8 +252,10 @@ Agendamento (a cada 15 minutos; o lock impede passadas sobrepostas):
 
 Para notificar no Telegram, use `"notifier": { "type": "telegram", "chatId": "<id>" }`
 e defina `TELEGRAM_BOT_TOKEN` no ambiente — o token nunca vai no arquivo de
-configuração, e o agente não o recebe. Um token de registry privado para o
-`npm ci` vai no `passEnv` do comando de setup, nunca no ambiente inteiro.
+configuração, e o agente não o recebe. O setup da verificação roda sobre o
+commit do agente e por isso não tem o `HOME` do usuário: se ele precisa de um
+token de registry privado, libere só esse token no `passEnv` do comando de
+setup.
 
 Em [`examples/inbox`](examples/inbox) há três solicitações: uma clara e
 aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
@@ -249,7 +264,7 @@ aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
 ## Testes
 
 ```bash
-npm run check   # typecheck + 151 testes
+npm run check   # typecheck + 159 testes
 ```
 
 - **Unitários** para cada peça: a função `decide` em todas as combinações, o
@@ -260,7 +275,9 @@ npm run check   # typecheck + 151 testes
   segundo plano).
 - **Git real contra cada ataque da revisão**: hooks plantados no repositório do
   agente, remote e fsmonitor reescritos, a ref da base movida para esconder um
-  `.env`, a branch movida depois da coleta, e mais de um push URL.
+  `.env`, a branch movida depois da coleta, um filtro que tenta usar o `$HOME`,
+  hooks de template do usuário, push URL alterado durante o run e mais de um
+  push URL.
 - **Pipeline** com fakes para todos os desfechos, idempotência, lock,
   recuperação de crash, falha isolada por solicitação e anexos fora da pasta
   ou via symlink.
@@ -296,11 +313,17 @@ playbook/agent-playbook.md   # o roteiro que o agente segue
   repositórios simultâneos — o ledger e o lock já isolam o estado por solicitação.
 - O desfecho é um push de branch; abrir o PR automaticamente, com o relatório
   como descrição, é o próximo passo natural.
-- Cada run copia o repositório (o do agente e o da verificação) e refaz o
-  setup: mais lento e mais disco que um worktree, mas é o que separa o agente
-  do clone principal e garante que o commit publicado é o mesmo que passou nos
-  gates, num checkout limpo. Em repositórios grandes, um `--filter=blob:none`
-  ou um cache de dependências por lockfile são o próximo ajuste.
+- Cada run cria dois repositórios rasos (o do agente, com os últimos 50
+  commits da base, e o da verificação, só com o commit checado) e refaz o
+  setup: mais lento que um worktree, mas é o que separa o agente do clone
+  principal e garante que o commit publicado é o mesmo que passou nos gates,
+  num checkout limpo.
+- **git-lfs ainda não é suportado**: os repositórios novos não têm um remote
+  LFS de onde baixar o conteúdo. Repositórios que dependem de LFS nos testes
+  precisam de um passo de setup próprio.
+- Dependências privadas via `git+ssh` funcionam no setup antes do agente, mas
+  não na verificação, que roda sem as chaves do usuário de propósito. Prefira
+  registry com token (liberado no `passEnv` do setup).
 - Métricas que valem acompanhar: taxa de `published` aceito sem retrabalho na
   revisão, lead time da aprovação até a branch, apontamentos da revisão humana
   por entrega e taxa de `blocked` legítimo.

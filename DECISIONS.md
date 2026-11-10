@@ -193,16 +193,24 @@ snapshot deixou de existir. `upload-pack`, o lado do git que serve um `fetch`,
 é feito para repositórios não confiáveis e não executa a config nem os hooks
 de quem serve.
 
-**Custo:** copiar o repositório a cada run (agente e verificação) é mais lento
-e ocupa mais disco que um worktree. Num repositório grande, um clone parcial
-(`--filter=blob:none`) é o ajuste natural.
+O git que o orquestrador roda dentro desses diretórios recebe um `HOME`
+descartável, sem config global nem de sistema: um filtro que o agente plantou
+no próprio `.git/config` roda com o privilégio do agente e não alcança os
+dotfiles do usuário. Os repositórios nascem com `--template=`, sem os hooks de
+template do usuário.
+
+**Custo:** criar repositórios a cada run é mais lento que um worktree. Para não
+copiar o histórico inteiro, o do agente recebe os últimos 50 commits da base e
+o da verificação, só o commit checado.
 
 ## 17. Toda evidência sai de dois SHAs anotados; nada do agente sobrevive a ele
 
-O `fetch` anota o SHA da base antes do agente rodar; a coleta anota o SHA do
-agente uma vez. `commitsAhead`, `changedFiles`, a verificação e o push recebem
-esses SHAs (e recusam o que não for um SHA completo). O `exec` ganhou
-`killGroupOnExit`, usado para o agente e para os gates.
+O `fetch` anota o SHA da base e os push URLs do remote antes do agente rodar;
+a coleta anota o SHA do agente uma vez. `commitsAhead`, `changedFiles`, a
+verificação e o push recebem esses valores explicitamente (e recusam o que não
+for um SHA completo). O push vai para os URLs anotados e é recusado se eles
+mudaram durante o run. A ref privada da coleta é apagada no fim do run. O
+`exec` ganhou `killGroupOnExit`, usado para o agente e para os gates.
 
 **Por quê:** antes, o diff e a contagem de commits liam refs no momento. Um
 processo deixado em segundo plano podia mover a branch entre as checagens, e o
@@ -210,21 +218,30 @@ agente podia mover `origin/main` para cima de um commit que mexia em `.env` —
 o diff contra a base movida mostraria só o commit inocente seguinte, e os dois
 seriam publicados. Comparar contra SHAs anotados torna a ordem e as refs
 irrelevantes; matar o grupo de processos na saída normal tira o processo
-residual de cena.
+residual de cena. Anotar os push URLs fecha o último caminho em que uma config
+reescrita durante o run decidiria para onde o commit vai.
 
-## 18. `HOME` vazio para o agente, o setup e os gates
+## 18. `HOME` vazio para o agente e para a verificação
 
-Por padrão (`isolateHome`), cada run recebe um `HOME` novo e vazio ao lado do
-seu repositório, e a verificação recebe outro; os dois são apagados com o
-repositório. O Claude Code autentica por `ANTHROPIC_API_KEY` ou
-`CLAUDE_CODE_OAUTH_TOKEN` (de `claude setup-token`), liberados em
-`agent.passEnv`. `XDG_CONFIG_HOME` e `CLAUDE_CONFIG_DIR` saíram da allowlist.
+Por padrão (`isolateHome`), o agente recebe um `HOME` novo e vazio ao lado do
+seu repositório, e a verificação (setup e gates sobre o commit dele) recebe
+outro; os dois são apagados com o repositório. Os runs isolados compartilham
+só o cache do npm, em `workDir/cache/npm`. O Claude Code autentica por
+`ANTHROPIC_API_KEY` ou `CLAUDE_CODE_OAUTH_TOKEN` (de `claude setup-token`),
+liberados em `agent.passEnv` por padrão; sem nenhum deles, o poll recusa
+começar. `XDG_CONFIG_HOME` e `CLAUDE_CONFIG_DIR` saíram da allowlist.
+
+O setup que roda **antes** do agente, sobre a base intacta, é código
+confiável e mantém o `HOME` do usuário: sem as chaves SSH e os tokens de
+registry dele, dependências privadas quebrariam toda solicitação.
 
 **Por quê:** com o `HOME` do usuário, um script de teste do agente podia
 escrever no `~/.gitconfig` um `pushInsteadOf` ou um `credential.helper` — e
 todo comando git do orquestrador lê esse arquivo com o ambiente completo. O
 mesmo vale para `~/.npmrc`, `~/.ssh` e `~/.claude`. Um `HOME` por run também
-impede que um run contamine o seguinte.
+impede que um run contamine o seguinte. O cache compartilhado do npm é a
+exceção consciente: os pacotes são endereçados pelo hash de integridade do
+lockfile, então uma entrada adulterada não passa no `npm ci`.
 
 **Limite assumido:** o agente roda com o mesmo usuário do poll. Um script dele
 ainda pode escrever por caminho absoluto num arquivo desse usuário. O que este

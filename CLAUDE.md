@@ -32,8 +32,10 @@ agente com evidência objetiva — nunca a IA.**
 9. **Nada compartilhado com o agente**: ele trabalha num repositório próprio
    (nunca um worktree) e num `HOME` vazio. O orquestrador só traz o commit dele
    por `git fetch`; git dentro de diretório escrito pelo agente roda com o
-   ambiente do sandbox e `GIT_CONFIG_GLOBAL=/dev/null`. Evidência, verificação e
-   push saem do SHA da base anotado no `fetch` e do SHA coletado.
+   ambiente do sandbox, um `HOME` descartável e `GIT_CONFIG_GLOBAL=/dev/null`.
+   Evidência, verificação e push saem da `Baseline` (SHA da base e push URLs,
+   anotados no `fetch`) e do SHA coletado; o push é recusado se os URLs
+   mudaram. Só o setup sobre a base intacta usa o `HOME` do usuário.
 
 ## Stack
 

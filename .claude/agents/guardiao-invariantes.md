@@ -40,7 +40,9 @@ citando arquivo e linha quando enfraquecido:
    rodar git com o ambiente do orquestrador dentro do repositório do agente ou
    da verificação? Algum comando git novo deixou de passar por `SAFE_GIT`?
    Alguma evidência voltou a ler uma ref (`origin/main`, a branch) em vez dos
-   SHAs anotados? O `HOME` do agente e dos gates continua isolado por padrão?
+   SHAs anotados? O push continua indo só para os URLs da `Baseline`? O `HOME`
+   do agente e da verificação continua isolado por padrão, e só o setup sobre a
+   base intacta usa o do usuário?
 
 Depois verifique se cada comportamento novo tem teste (unitário em
 `test/*.test.ts` ou ponta a ponta em `test/e2e.test.ts`) e rode
