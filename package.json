@@ -14,6 +14,7 @@
     "retry": "tsx src/cli.ts retry",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:container": "vitest run --config vitest.container.config.ts",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test"
   },

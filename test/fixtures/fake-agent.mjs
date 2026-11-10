@@ -1,12 +1,18 @@
 // Stands in for `claude -p` in end-to-end tests.
 // Usage: node fake-agent.mjs <scenario> [claude flags...] --add-dir <contractDir> [--add-dir <dir>...]  (prompt on stdin)
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 const scenario = args[0];
 const contractDir = args[args.indexOf('--add-dir') + 1];
+/** Paths given right after the scenario, before the claude flags. */
+const targets = [];
+for (const arg of args.slice(1)) {
+  if (arg.startsWith('-')) break;
+  targets.push(arg);
+}
 const prompt = readFileSync(0, 'utf8');
 
 const git = (...gitArgs) => execFileSync('git', gitArgs, { stdio: 'pipe' });
@@ -108,6 +114,29 @@ switch (scenario) {
     break;
   case 'crash':
     process.exit(1);
+    break;
+  case 'escape': {
+    // Tries to write each target from wherever it runs; reports what happened to each.
+    const results = targets.map((target) => {
+      try {
+        appendFileSync(target, 'pwned\n');
+        return `${target}: written`;
+      } catch (error) {
+        return `${target}: ${error.code}`;
+      }
+    });
+    commit('feature.txt', 'ok\n');
+    finish('implemented', results.join('\n'));
+    break;
+  }
+  case 'symlink-report':
+    commit('feature.txt', 'ok\n');
+    writeFileSync(join(contractDir, 'STATUS'), 'implemented\n');
+    symlinkSync(targets[0], join(contractDir, 'REPORT.md'));
+    process.stdout.write(JSON.stringify({ type: 'result', is_error: false }));
+    break;
+  case 'hang':
+    setInterval(() => undefined, 1_000);
     break;
   default:
     console.error(`unknown scenario ${scenario}`);
