@@ -4,7 +4,6 @@
   "baseBranch": "main",
   "branchPrefix": "agent/",
   "inboxDir": "./examples/inbox",
-  "workDir": "./.agent-runner",
   "forbiddenPaths": [".env", ".env.*", "**/*.pem", "**/*.key", "**/secrets/**"],
   "setup": [{ "name": "install", "command": "npm", "args": ["ci"], "timeoutMs": 600000 }],
   "agent": {
@@ -13,6 +12,8 @@
       "-p",
       "--output-format", "json",
       "--permission-mode", "acceptEdits",
+      "--setting-sources", "project",
+      "--strict-mcp-config",
       "--allowedTools", "Read", "Edit", "Write", "Glob", "Grep", "Task",
       "Bash(npm test:*)", "Bash(npx tsc:*)", "Bash(npx vitest:*)",
       "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)",

@@ -1,7 +1,10 @@
+import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { homedir } from 'node:os';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { slugify } from './scope.js';
 
 const commandSchema = z.object({
   name: z.string().min(1),
@@ -31,8 +34,12 @@ export const configSchema = z.object({
     .default('agent/'),
   /** Where approved requests are read from (file source). */
   inboxDir: z.string().min(1),
-  /** Ledger, lock, run artifacts and worktrees. Keep it outside repoPath. */
-  workDir: z.string().min(1).default('.agent-runner'),
+  /**
+   * Ledger, lock, run artifacts and worktrees. Defaults to a per-repository folder under
+   * ~/.local/state. Never inside repoPath or this orchestrator: Claude Code reads CLAUDE.md
+   * from parent directories, so the agent would pick up the wrong instructions.
+   */
+  workDir: z.string().min(1).optional(),
   /** Glob patterns the agent must never touch. Without "/", they match the file name anywhere. */
   forbiddenPaths: z.array(z.string().min(1)).default(['.env', '.env.*']),
   /**
@@ -63,17 +70,43 @@ export const configSchema = z.object({
 export type AgentConfig = z.infer<typeof configSchema>;
 
 /** Config with every path made absolute. */
-export type ResolvedConfig = AgentConfig & { agent: AgentConfig['agent'] & { playbook: string } };
+export type ResolvedConfig = Omit<AgentConfig, 'workDir'> & {
+  workDir: string;
+  agent: AgentConfig['agent'] & { playbook: string };
+};
 
-export const DEFAULT_PLAYBOOK = fileURLToPath(new URL('../playbook/agent-playbook.md', import.meta.url));
+export const ORCHESTRATOR_ROOT = fileURLToPath(new URL('..', import.meta.url));
+export const DEFAULT_PLAYBOOK = join(ORCHESTRATOR_ROOT, 'playbook', 'agent-playbook.md');
+
+export function defaultWorkDir(repoPath: string, home = homedir()): string {
+  const id = createHash('sha256').update(repoPath).digest('hex').slice(0, 8);
+  return join(home, '.local', 'state', 'evidence-gated-agent', `${slugify(basename(repoPath))}-${id}`);
+}
+
+function isInside(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
 
 export function parseConfig(raw: unknown, baseDir: string): ResolvedConfig {
   const config = configSchema.parse(raw);
+  const repoPath = resolve(baseDir, config.repoPath);
+  const workDir = config.workDir ? resolve(baseDir, config.workDir) : defaultWorkDir(repoPath);
+
+  if (isInside(repoPath, workDir)) {
+    throw new Error(`workDir (${workDir}) must be outside repoPath: worktrees cannot live inside the repository`);
+  }
+  if (isInside(ORCHESTRATOR_ROOT, workDir)) {
+    throw new Error(
+      `workDir (${workDir}) must be outside the orchestrator: the agent would load the orchestrator's CLAUDE.md`,
+    );
+  }
+
   return {
     ...config,
-    repoPath: resolve(baseDir, config.repoPath),
+    repoPath,
     inboxDir: resolve(baseDir, config.inboxDir),
-    workDir: resolve(baseDir, config.workDir),
+    workDir,
     agent: {
       ...config.agent,
       playbook: config.agent.playbook ? resolve(baseDir, config.agent.playbook) : DEFAULT_PLAYBOOK,

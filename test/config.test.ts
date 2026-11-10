@@ -1,5 +1,6 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_PLAYBOOK, parseConfig } from '../src/config.js';
+import { DEFAULT_PLAYBOOK, defaultWorkDir, ORCHESTRATOR_ROOT, parseConfig } from '../src/config.js';
 import { isApproved, supportRequestSchema } from '../src/request.js';
 
 const minimal = {
@@ -14,11 +15,26 @@ describe('parseConfig', () => {
     const config = parseConfig(minimal, '/srv/runner');
     expect(config.repoPath).toBe('/srv/target');
     expect(config.inboxDir).toBe('/srv/runner/inbox');
-    expect(config.workDir).toBe('/srv/runner/.agent-runner');
+    expect(config.workDir).toBe(defaultWorkDir('/srv/target'));
+    expect(config.workDir).toMatch(/\.local\/state\/evidence-gated-agent\/target-[0-9a-f]{8}$/);
     expect(config.forbiddenPaths).toEqual(['.env', '.env.*']);
     expect(config.agent.playbook).toBe(DEFAULT_PLAYBOOK);
     expect(config.notifier).toEqual({ type: 'console' });
     expect(config.push).toBe(true);
+  });
+
+  it('keeps state for different repositories apart', () => {
+    expect(defaultWorkDir('/a/app')).not.toBe(defaultWorkDir('/b/app'));
+  });
+
+  it('refuses a workDir inside the target repository', () => {
+    expect(() => parseConfig({ ...minimal, workDir: '../target/.state' }, '/srv/runner')).toThrow(/outside repoPath/);
+  });
+
+  it("refuses a workDir inside the orchestrator, where the agent would load the orchestrator's CLAUDE.md", () => {
+    expect(() => parseConfig({ ...minimal, workDir: join(ORCHESTRATOR_ROOT, '.agent-runner') }, '/srv/runner')).toThrow(
+      /outside the orchestrator/,
+    );
   });
 
   it('refuses a configuration without gates', () => {
