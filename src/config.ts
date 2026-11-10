@@ -49,12 +49,25 @@ export const configSchema = z.object({
    */
   attentionPaths: z
     .array(z.string().min(1))
-    .default(['package.json', '*.config.*', 'tsconfig*.json', '.github/**', '.claude/**', 'CLAUDE.md']),
+    .default([
+      'package.json',
+      'package-lock.json',
+      'pnpm-lock.yaml',
+      'yarn.lock',
+      '*.config.*',
+      'tsconfig*.json',
+      '.husky/**',
+      '.github/**',
+      '.claude/**',
+      'CLAUDE.md',
+    ]),
   /** Runs in the fresh worktree before the agent (e.g. dependency install). */
   setup: z.array(commandSchema).default([]),
   agent: z.object({
     command: z.string().min(1).default('claude'),
-    args: z.array(z.string()).default(['-p', '--output-format', 'json']),
+    args: z
+      .array(z.string())
+      .default(['-p', '--output-format', 'json', '--setting-sources', 'project', '--strict-mcp-config']),
     timeoutMs: z.number().int().positive().default(30 * 60_000),
     /** Variables the agent needs beyond the sandbox baseline, e.g. ANTHROPIC_API_KEY. */
     passEnv: z.array(z.string().min(1)).default([]),

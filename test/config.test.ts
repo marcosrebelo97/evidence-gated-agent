@@ -21,6 +21,16 @@ describe('parseConfig', () => {
     expect(config.agent.playbook).toBe(DEFAULT_PLAYBOOK);
     expect(config.notifier).toEqual({ type: 'console' });
     expect(config.push).toBe(true);
+    // The agent loads only the target project's settings and no MCP server from the host.
+    expect(config.agent.args).toEqual([
+      '-p',
+      '--output-format',
+      'json',
+      '--setting-sources',
+      'project',
+      '--strict-mcp-config',
+    ]);
+    expect(config.attentionPaths).toEqual(expect.arrayContaining(['package-lock.json', '.husky/**']));
   });
 
   it('keeps state for different repositories apart', () => {
