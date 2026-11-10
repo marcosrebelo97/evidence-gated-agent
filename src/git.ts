@@ -1,33 +1,33 @@
-import { readFile, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { rm } from 'node:fs/promises';
 import type { Exec } from './exec.js';
-
-/** The shared repository config at a point in time, to detect (and undo) tampering. */
-export interface ConfigSnapshot {
-  file: string;
-  content: string;
-}
+import { sandboxEnv } from './sandbox.js';
 
 export interface GitOps {
-  /** Updates the remote base branch and records the push URL before any agent runs. */
-  fetch(): Promise<void>;
-  /** Creates a disposable worktree on a fresh branch from the remote base. The main clone is never checked out. */
-  createWorktree(path: string, branch: string): Promise<void>;
-  removeWorktree(path: string): Promise<void>;
-  headSha(worktree: string): Promise<string>;
-  /** Commits in `commit` that are not in the base. */
+  /** Updates the remote base branch and records its SHA: every later comparison uses that SHA. */
+  fetch(): Promise<string>;
+  /**
+   * Creates the agent's workspace: a new, independent repository holding only the base
+   * commit, on a fresh branch. It shares nothing with the main clone (no hooks, config,
+   * refs or object store), so nothing the agent does in it reaches the orchestrator.
+   */
+  createWorkspace(path: string, branch: string): Promise<void>;
+  /** Deletes a workspace or verification directory. No git runs inside it. */
+  removeWorkspace(path: string): Promise<void>;
+  /**
+   * Brings the agent's HEAD into the main clone, under a private ref, and returns its SHA.
+   * From here on, the evidence, the verification and the push all use this SHA.
+   */
+  collect(workspace: string, id: string): Promise<string>;
+  /** Commits in `commit` that are not in the recorded base. */
   commitsAhead(commit: string): Promise<number>;
-  /** Files changed by `commit` relative to the base (renames as delete + add). */
+  /** Files changed by `commit` relative to the recorded base (renames as delete + add). */
   changedFiles(commit: string): Promise<string[]>;
-  /** Uncommitted or untracked files left in the worktree. */
-  dirtyFiles(worktree: string): Promise<string[]>;
-  /** A detached worktree at an exact commit: what the gates verify is exactly what gets pushed. */
-  createVerificationWorktree(path: string, commit: string): Promise<void>;
-  /** Pushes an exact commit to the agent branch, to the URL recorded by fetch(). Never forced, never to the base. */
+  /** Uncommitted or untracked files left in the workspace. Runs with the agent's privileges. */
+  dirtyFiles(workspace: string): Promise<string[]>;
+  /** A new repository with only `commit` checked out: what the gates verify is exactly what gets pushed. */
+  createVerification(path: string, commit: string): Promise<void>;
+  /** Pushes an exact commit to the agent branch. Never forced, never to the base. */
   push(commit: string, branch: string): Promise<void>;
-  snapshotConfig(): Promise<ConfigSnapshot>;
-  configChanged(snapshot: ConfigSnapshot): Promise<boolean>;
-  restoreConfig(snapshot: ConfigSnapshot): Promise<void>;
 }
 
 export interface GitSettings {
@@ -46,9 +46,8 @@ export class GitError extends Error {
 const GIT_TIMEOUT_MS = 5 * 60_000;
 
 /**
- * Worktrees share hooks and config with the main clone, and the agent can write to both.
- * Every git command the orchestrator runs (with its full environment) ignores hooks and
- * fsmonitor, so nothing the agent planted executes on the orchestrator's side.
+ * Applied to every git command the orchestrator runs. The main clone is never written by
+ * the agent, but the orchestrator still never runs a hook or an fsmonitor command.
  */
 const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'];
 
@@ -63,83 +62,92 @@ function nulSeparated(output: string): string[] {
   return output.split('\0').filter((entry) => entry.length > 0);
 }
 
-export function createGit(exec: Exec, settings: GitSettings): GitOps {
-  const baseRef = `${settings.remote}/${settings.baseBranch}`;
-  let pushUrl: string | undefined;
+/** Private namespace in the main clone for commits collected from agent workspaces. */
+export const CANDIDATE_REFS = 'refs/evidence-gated-agent';
 
-  const git = async (cwd: string, args: string[]): Promise<string> => {
-    const result = await exec('git', [...SAFE_GIT, ...args], { cwd, timeoutMs: GIT_TIMEOUT_MS });
+export function createGit(exec: Exec, settings: GitSettings): GitOps {
+  const baseRef = `refs/remotes/${settings.remote}/${settings.baseBranch}`;
+  let baseSha: string | undefined;
+
+  const run = async (cwd: string, args: string[], env?: Record<string, string>): Promise<string> => {
+    const result = await exec('git', [...SAFE_GIT, ...args], {
+      cwd,
+      timeoutMs: GIT_TIMEOUT_MS,
+      ...(env ? { env, inheritEnv: false, killGroupOnExit: true } : {}),
+    });
     if (result.code !== 0) throw new GitError(args, result.code, result.stderr);
     return result.stdout;
   };
-  const inRepo = (args: string[]) => git(settings.repoPath, args);
+  const inRepo = (args: string[]) => run(settings.repoPath, args);
+  const base = (): string => {
+    if (!baseSha) throw new Error('base unknown: fetch() must run first');
+    return baseSha;
+  };
 
-  const configFile = async (): Promise<string> => {
-    const dir = (await inRepo(['rev-parse', '--git-common-dir'])).trim();
-    return join(isAbsolute(dir) ? dir : join(settings.repoPath, dir), 'config');
+  /** A new repository at `path` with `commit` fetched from the main clone. Nothing of the agent's is in it yet. */
+  const freshRepository = async (path: string, commit: string): Promise<void> => {
+    await rm(path, { recursive: true, force: true });
+    await run(settings.repoPath, ['init', '--quiet', path]);
+    await run(path, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', settings.repoPath, commit]);
   };
 
   return {
     async fetch() {
       await inRepo(['fetch', '--quiet', settings.remote, settings.baseBranch]);
-      pushUrl = (await inRepo(['remote', 'get-url', '--push', settings.remote])).trim();
+      baseSha = (await inRepo(['rev-parse', '--verify', `${baseRef}^{commit}`])).trim();
+      return baseSha;
     },
 
-    async createWorktree(path, branch) {
+    async createWorkspace(path, branch) {
       if (branch === settings.baseBranch) throw new Error('refusing to use the base branch as agent branch');
-      // -B: a retried request starts again from the current base instead of reusing an old attempt.
-      await inRepo(['worktree', 'add', '--quiet', '-B', branch, path, baseRef]);
+      const commit = base();
+      await freshRepository(path, commit);
+      // The playbook diffs against <remote>/<base>; inside the workspace it is a plain local ref.
+      await run(path, ['update-ref', baseRef, commit]);
+      await run(path, ['checkout', '--quiet', '-b', branch, commit]);
     },
 
-    async removeWorktree(path) {
-      await inRepo(['worktree', 'remove', '--force', path]);
-      await inRepo(['worktree', 'prune']);
+    async removeWorkspace(path) {
+      await rm(path, { recursive: true, force: true });
     },
 
-    async headSha(worktree) {
-      return (await git(worktree, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+    async collect(workspace, id) {
+      const ref = `${CANDIDATE_REFS}/${id}`;
+      // upload-pack is the side of git built to serve untrusted repositories: the workspace's
+      // config, hooks and attributes are not executed by this fetch.
+      await inRepo(['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', workspace, `+HEAD:${ref}`]);
+      return (await inRepo(['rev-parse', '--verify', `${ref}^{commit}`])).trim();
     },
 
     async commitsAhead(commit) {
       assertSha(commit);
-      return Number.parseInt((await inRepo(['rev-list', '--count', `${baseRef}..${commit}`])).trim(), 10);
+      return Number.parseInt((await inRepo(['rev-list', '--count', `${base()}..${commit}`])).trim(), 10);
     },
 
     async changedFiles(commit) {
       assertSha(commit);
       // --no-renames: a rename shows as delete + add, so the source path of a moved secret is still checked.
-      return nulSeparated(await inRepo(['diff', '--name-only', '-z', '--no-renames', `${baseRef}...${commit}`]));
+      return nulSeparated(await inRepo(['diff', '--name-only', '-z', '--no-renames', `${base()}...${commit}`]));
     },
 
-    async dirtyFiles(worktree) {
-      const output = await git(worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames']);
+    async dirtyFiles(workspace) {
+      // The workspace is the agent's: its config can run filters. Same environment as the agent, nothing more.
+      const env = sandboxEnv({ remote: settings.remote });
+      const output = await run(workspace, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'], env);
       return nulSeparated(output).map((entry) => entry.slice(3));
     },
 
-    async createVerificationWorktree(path, commit) {
+    async createVerification(path, commit) {
       assertSha(commit);
-      await inRepo(['worktree', 'add', '--quiet', '--detach', path, commit]);
+      await freshRepository(path, commit);
+      // The commit's .gitattributes can select filters from the user's git config: check out unprivileged.
+      await run(path, ['checkout', '--quiet', '--detach', commit], sandboxEnv({ remote: settings.remote }));
     },
 
     async push(commit, branch) {
       if (branch === settings.baseBranch) throw new Error('refusing to push to the base branch');
       assertSha(commit);
-      if (!pushUrl) throw new Error('push URL unknown: fetch() must run before any agent');
-      // The URL recorded before the agent ran: a remote rewritten by the agent has no effect.
-      await inRepo(['push', '--quiet', '--no-verify', pushUrl, `${commit}:refs/heads/${branch}`]);
-    },
-
-    async snapshotConfig() {
-      const file = await configFile();
-      return { file, content: await readFile(file, 'utf8') };
-    },
-
-    async configChanged(snapshot) {
-      return (await readFile(snapshot.file, 'utf8').catch(() => '')) !== snapshot.content;
-    },
-
-    async restoreConfig(snapshot) {
-      await writeFile(snapshot.file, snapshot.content, 'utf8');
+      await inRepo(['push', '--quiet', '--no-verify', settings.remote, `${commit}:refs/heads/${branch}`]);
     },
   };
 }

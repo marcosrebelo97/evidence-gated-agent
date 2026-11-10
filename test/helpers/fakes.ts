@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { AgentRun, AgentRunner, AgentStatus } from '../../src/agent/runner.js';
 import { parseConfig, type ResolvedConfig } from '../../src/config.js';
 import type { GateResult } from '../../src/gates.js';
-import type { ConfigSnapshot, GitOps } from '../../src/git.js';
+import type { GitOps } from '../../src/git.js';
 import type { Notifier, RunSummary } from '../../src/notify.js';
 import type { PipelineDeps } from '../../src/pipeline.js';
 import { FileRequestSource } from '../../src/source.js';
@@ -22,11 +22,9 @@ export class FakeGit implements GitOps {
   readonly pushed: string[] = [];
   readonly pushedCommits: string[] = [];
   static readonly SHA = 'a'.repeat(40);
+  static readonly BASE = 'b'.repeat(40);
   state: WorkspaceState = { commitsAhead: 0, dirtyFiles: [], changedFiles: [] };
   failOn?: keyof GitOps;
-  /** Simulates something rewriting the shared .git/config; restoreConfig clears it. */
-  configTampered = false;
-  restored = 0;
 
   private check(op: keyof GitOps, detail = ''): void {
     this.calls.push(detail ? `${op} ${detail}` : op);
@@ -35,12 +33,17 @@ export class FakeGit implements GitOps {
 
   async fetch() {
     this.check('fetch');
+    return FakeGit.BASE;
   }
-  async createWorktree(_path: string, branch: string) {
-    this.check('createWorktree', branch);
+  async createWorkspace(_path: string, branch: string) {
+    this.check('createWorkspace', branch);
   }
-  async removeWorktree(path: string) {
-    this.check('removeWorktree', path.split('/').pop());
+  async removeWorkspace(path: string) {
+    this.check('removeWorkspace', path.split('/').pop());
+  }
+  async collect(_workspace: string, id: string) {
+    this.check('collect', id);
+    return this.state.commitsAhead > 0 ? FakeGit.SHA : FakeGit.BASE;
   }
   async commitsAhead() {
     this.check('commitsAhead');
@@ -54,24 +57,8 @@ export class FakeGit implements GitOps {
     this.check('changedFiles');
     return this.state.changedFiles;
   }
-  async headSha() {
-    this.check('headSha');
-    return FakeGit.SHA;
-  }
-  async createVerificationWorktree(_path: string, commit: string) {
-    this.check('createVerificationWorktree', commit.slice(0, 7));
-  }
-  async snapshotConfig(): Promise<ConfigSnapshot> {
-    this.check('snapshotConfig');
-    return { file: '/fake/config', content: '' };
-  }
-  async configChanged() {
-    return this.configTampered;
-  }
-  async restoreConfig() {
-    this.check('restoreConfig');
-    this.configTampered = false;
-    this.restored++;
+  async createVerification(_path: string, commit: string) {
+    this.check('createVerification', commit.slice(0, 7));
   }
   async push(commit: string, branch: string) {
     this.check('push', branch);
@@ -86,14 +73,12 @@ export class FakeAgent implements AgentRunner {
   declared: AgentStatus = 'implemented';
   report = 'relatório';
   effect: Partial<WorkspaceState> = { commitsAhead: 1, changedFiles: ['src/feature.ts'] };
-  tamperConfig = false;
 
   constructor(private readonly git: FakeGit) {}
 
   async run({ prompt }: { prompt: string }): Promise<AgentRun> {
     this.prompts.push(prompt);
     this.git.state = { ...this.git.state, ...this.effect };
-    if (this.tamperConfig) this.git.configTampered = true;
     return {
       status: this.declared,
       report: this.report,

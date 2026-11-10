@@ -39,15 +39,15 @@ describe('pollOnce — publication', () => {
     expect(h.git.pushed).toEqual(['agent/REQ-1-filtro-por-periodo']);
     expect(h.gateRuns).toBe(1);
     expect(await ledgerEntry('REQ-1')).toMatchObject({ status: 'published', costUsd: 0.25 });
-    expect(h.git.calls.at(-1)).toBe('removeWorktree REQ-1');
+    expect(h.git.calls.at(-1)).toBe('removeWorkspace REQ-1');
     expect(h.notifier.sent[0]).toMatchObject({ id: 'REQ-1', outcome: 'published', report: 'relatório' });
   });
 
-  it('verifies on a separate worktree at the exact commit, and pushes that commit', async () => {
+  it('verifies in a separate repository at the exact commit, and pushes that commit', async () => {
     await h.addRequest(approved());
     await pollOnce(h.deps);
-    expect(h.git.calls).toContain(`createVerificationWorktree ${FakeGit.SHA.slice(0, 7)}`);
-    expect(h.git.calls).toContain('removeWorktree REQ-1.verify');
+    expect(h.git.calls).toContain(`createVerification ${FakeGit.SHA.slice(0, 7)}`);
+    expect(h.git.calls).toContain('removeWorkspace REQ-1.verify');
     expect(h.git.pushedCommits).toEqual([FakeGit.SHA]);
     expect((await ledgerEntry('REQ-1'))?.commit).toBe(FakeGit.SHA);
   });
@@ -61,7 +61,7 @@ describe('pollOnce — publication', () => {
 
   it('runs setup as trusted only on the untouched base, never on the agent commit', async () => {
     const trusted: boolean[] = [];
-    h.deps.runSetup = async (_worktree, options) => {
+    h.deps.runSetup = async (_dir, options) => {
       trusted.push(options.trusted);
       return [];
     };
@@ -70,7 +70,7 @@ describe('pollOnce — publication', () => {
     expect(trusted).toEqual([true, false]);
   });
 
-  it('rejects when setup breaks in the verification worktree', async () => {
+  it('rejects when setup breaks in the verification repository', async () => {
     let setupRuns = 0;
     h.deps.runSetup = async () => (++setupRuns === 2 ? [gate('install', false)] : []);
     await h.addRequest(approved());
@@ -118,38 +118,23 @@ describe('pollOnce — the agent is not trusted', () => {
     const [run] = (await pollOnce(h.deps)).processed;
     expect(run).toMatchObject({ outcome: 'rejected', reasons: ['gate "tests" failed (exit 1)'] });
     expect(h.git.pushed).toEqual([]);
-    // Only the pre-run cleanup: the rejected worktree is kept for inspection.
-    expect(h.git.calls.filter((call) => call === 'removeWorktree REQ-1')).toHaveLength(1);
+    // The rejected workspace is kept for inspection.
+    expect(h.git.calls).not.toContain('removeWorkspace REQ-1');
   });
 
-  it('fails and restores the shared git config when the agent changes it', async () => {
-    h.agent.tamperConfig = true;
-    await h.addRequest(approved());
-    const [run] = (await pollOnce(h.deps)).processed;
-    expect(run).toMatchObject({ outcome: 'failed', reasons: [expect.stringMatching(/changed the repository git config/)] });
-    expect(h.git.restored).toBe(1);
-    expect(h.git.configTampered).toBe(false);
-    expect(h.gateRuns).toBe(0);
-    expect(h.git.pushed).toEqual([]);
-  });
-
-  it('rejects and restores when the commit changes the git config during verification', async () => {
-    h.deps.runGates = async () => {
-      h.git.configTampered = true;
-      return [gate('tests')];
-    };
-    await h.addRequest(approved());
-    const [run] = (await pollOnce(h.deps)).processed;
-    expect(run).toMatchObject({ outcome: 'rejected', reasons: ['gate "git-config-integrity" failed (exit 1)'] });
-    expect(h.git.configTampered).toBe(false);
-    expect(h.git.pushed).toEqual([]);
-  });
-
-  it('reads HEAD once and derives every check from that commit', async () => {
+  it('collects the agent HEAD once, then derives every check from that SHA', async () => {
     await h.addRequest(approved());
     await pollOnce(h.deps);
-    const order = h.git.calls.filter((call) => ['headSha', 'commitsAhead', 'changedFiles'].includes(call));
-    expect(order).toEqual(['headSha', 'commitsAhead', 'changedFiles']);
+    const order = h.git.calls.filter((call) => /^(collect|commitsAhead|changedFiles|createVerification|push)/.test(call));
+    expect(order).toEqual([
+      'collect REQ-1',
+      'commitsAhead',
+      'changedFiles',
+      `createVerification ${FakeGit.SHA.slice(0, 7)}`,
+      'push agent/REQ-1-filtro-por-periodo',
+    ]);
+    const evidence = JSON.parse(await readFile(join(await runDirOf('REQ-1'), 'evidence.json'), 'utf8'));
+    expect(evidence).toMatchObject({ base: FakeGit.BASE, commit: FakeGit.SHA });
   });
 
   it('rejects when a forbidden path was touched', async () => {
@@ -171,7 +156,7 @@ describe('pollOnce — blocked and failures', () => {
     expect(h.notifier.sent[0]?.report).toContain('Qual data');
     expect(h.gateRuns).toBe(0);
     expect(h.git.pushed).toEqual([]);
-    expect(h.git.calls.at(-1)).toBe('removeWorktree REQ-1');
+    expect(h.git.calls.at(-1)).toBe('removeWorkspace REQ-1');
   });
 
   it('fails without calling the agent when setup breaks', async () => {
@@ -183,10 +168,10 @@ describe('pollOnce — blocked and failures', () => {
   });
 
   it('records an infrastructure error as failed, never leaving the request running', async () => {
-    h.git.failOn = 'createWorktree';
+    h.git.failOn = 'createWorkspace';
     await h.addRequest(approved());
     const [run] = (await pollOnce(h.deps)).processed;
-    expect(run).toMatchObject({ outcome: 'failed', reasons: ['orchestrator error: createWorktree exploded'] });
+    expect(run).toMatchObject({ outcome: 'failed', reasons: ['orchestrator error: createWorkspace exploded'] });
     expect((await ledgerEntry('REQ-1'))?.status).toBe('failed');
     expect(h.notifier.sent).toHaveLength(1);
   });

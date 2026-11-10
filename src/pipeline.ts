@@ -1,10 +1,10 @@
-import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { buildPrompt } from './agent/prompt.js';
 import { REPORT_FILE, STATUS_FILE, type AgentRunner } from './agent/runner.js';
 import type { ResolvedConfig } from './config.js';
 import { decide, gatesAreWorthRunning, type Evidence, type GateResult } from './gates.js';
-import type { ConfigSnapshot, GitOps } from './git.js';
+import type { GitOps } from './git.js';
 import type { Notifier, RunSummary } from './notify.js';
 import { branchName, findForbidden } from './scope.js';
 import type { LoadedRequest, RequestSource } from './source.js';
@@ -17,11 +17,11 @@ export interface PipelineDeps {
   git: GitOps;
   agent: AgentRunner;
   /**
-   * `trusted`: the worktree holds only the untouched base (before the agent runs), so the
+   * `trusted`: the workspace holds only the untouched base (before the agent runs), so the
    * setup may use git transports, e.g. for git dependencies. On the agent's commit it may not.
    */
-  runSetup: (worktree: string, options: { trusted: boolean }) => Promise<GateResult[]>;
-  runGates: (worktree: string) => Promise<GateResult[]>;
+  runSetup: (dir: string, options: { trusted: boolean }) => Promise<GateResult[]>;
+  runGates: (dir: string) => Promise<GateResult[]>;
   notifier: Notifier;
   playbook: string;
   now: () => Date;
@@ -34,8 +34,8 @@ export function runnerPaths(workDir: string) {
     lock: join(workDir, 'poll.lock'),
     /** One directory per attempt, so a retry never overwrites the audit trail of the previous one. */
     runDir: (id: string, startedAt: Date) => join(workDir, 'runs', id, startedAt.toISOString().replace(/[:.]/g, '-')),
-    worktree: (id: string) => join(workDir, 'worktrees', id),
-    verification: (id: string) => join(workDir, 'worktrees', `${id}.verify`),
+    workspace: (id: string) => join(workDir, 'workspaces', id),
+    verification: (id: string) => join(workDir, 'workspaces', `${id}.verify`),
   };
 }
 
@@ -57,52 +57,22 @@ async function prepareRunDir(runDir: string, loaded: LoadedRequest): Promise<str
   return copies;
 }
 
-async function freshWorktree(git: GitOps, path: string, create: () => Promise<void>): Promise<void> {
-  // A previous attempt may have kept its worktree for inspection; start clean.
-  await git.removeWorktree(path).catch(() => undefined);
-  await rm(path, { recursive: true, force: true });
-  await create();
-}
-
-const CONFIG_INTEGRITY_GATE = 'git-config-integrity';
-
 /**
- * Re-runs setup and gates in a new detached worktree at the exact commit. Nothing the agent
- * left behind (ignored files, a modified node_modules) and nothing the tests do to the
- * agent's branch can influence the verdict. The commit's tests share the repository config
- * with the main clone, so a change to it fails verification and is undone before any push.
+ * Re-runs setup and gates in a new repository holding only the exact commit. Nothing the
+ * agent left behind (ignored files, a modified node_modules, its repository config) and
+ * nothing the tests do can influence the verdict or reach the main clone.
  */
-async function verifyCommit(
-  commit: string,
-  id: string,
-  snapshot: ConfigSnapshot,
-  deps: PipelineDeps,
-): Promise<GateResult[]> {
+async function verifyCommit(commit: string, id: string, deps: PipelineDeps): Promise<GateResult[]> {
   const path = runnerPaths(deps.config.workDir).verification(id);
-  await freshWorktree(deps.git, path, () => deps.git.createVerificationWorktree(path, commit));
-  const startedAt = Date.now();
   try {
+    await deps.git.createVerification(path, commit);
     const setup = await deps.runSetup(path, { trusted: false });
     const brokenSetup = setup.filter((step) => !step.passed);
-    const results =
-      brokenSetup.length > 0
-        ? brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }))
-        : await deps.runGates(path);
-    if (await deps.git.configChanged(snapshot)) {
-      await deps.git.restoreConfig(snapshot);
-      results.push({
-        name: CONFIG_INTEGRITY_GATE,
-        passed: false,
-        exitCode: 1,
-        timedOut: false,
-        durationMs: Date.now() - startedAt,
-        outputTail: 'the commit changed the repository git config during verification; it was restored',
-      });
-    }
-    return results;
+    if (brokenSetup.length > 0) return brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }));
+    return await deps.runGates(path);
   } finally {
-    await deps.git.removeWorktree(path).catch((error: Error) => {
-      deps.log(`[${id}] could not remove verification worktree: ${error.message}`);
+    await deps.git.removeWorkspace(path).catch((error: Error) => {
+      deps.log(`[${id}] could not remove verification directory: ${error.message}`);
     });
   }
 }
@@ -114,7 +84,7 @@ interface Execution {
   costUsd?: number | undefined;
   commit?: string | undefined;
   attention: string[];
-  keepWorktree: boolean;
+  keepWorkspace: boolean;
 }
 
 async function execute(
@@ -125,15 +95,16 @@ async function execute(
 ): Promise<Execution> {
   const { config, git } = deps;
   const { request } = loaded;
-  const worktree = runnerPaths(config.workDir).worktree(request.id);
+  const workspace = runnerPaths(config.workDir).workspace(request.id);
 
   const attachments = await prepareRunDir(runDir, loaded);
 
-  await git.fetch();
-  await freshWorktree(git, worktree, () => git.createWorktree(worktree, branch));
+  const baseSha = await git.fetch();
+  // A previous attempt may have kept its workspace for inspection; this starts clean.
+  await git.createWorkspace(workspace, branch);
 
   // Still only the base here: nothing of the agent's has run yet.
-  const setup = await deps.runSetup(worktree, { trusted: true });
+  const setup = await deps.runSetup(workspace, { trusted: true });
   await writeJson(join(runDir, 'setup.json'), setup);
   const brokenSetup = setup.filter((step) => !step.passed);
   if (brokenSetup.length > 0) {
@@ -142,32 +113,9 @@ async function execute(
       reasons: brokenSetup.map((step) => `setup "${step.name}" failed (exit ${step.exitCode})`),
       report: '',
       attention: [],
-      keepWorktree: true,
+      keepWorkspace: true,
     };
   }
-
-  // The worktree shares .git/config with the main clone. Whatever the agent writes there
-  // (remote URL, fsmonitor, hooksPath) is detected and undone before the orchestrator relies on it.
-  const snapshot = await git.snapshotConfig();
-  try {
-    return await runAgentAndJudge(loaded, branch, runDir, worktree, attachments, snapshot, deps);
-  } finally {
-    // Safety net for any path that left early: the main clone keeps its own config.
-    if (await git.configChanged(snapshot).catch(() => false)) await git.restoreConfig(snapshot);
-  }
-}
-
-async function runAgentAndJudge(
-  loaded: LoadedRequest,
-  branch: string,
-  runDir: string,
-  worktree: string,
-  attachments: string[],
-  snapshot: ConfigSnapshot,
-  deps: PipelineDeps,
-): Promise<Execution> {
-  const { config, git } = deps;
-  const { request } = loaded;
 
   const prompt = buildPrompt({
     template: deps.playbook,
@@ -182,26 +130,14 @@ async function runAgentAndJudge(
   await writeFile(join(runDir, 'prompt.md'), prompt, 'utf8');
 
   deps.log(`[${request.id}] agent started on ${branch}`);
-  const run = await deps.agent.run({ worktree, runDir, prompt });
+  const run = await deps.agent.run({ workspace, runDir, prompt });
   await writeFile(join(runDir, 'agent-output.json'), run.rawOutput, 'utf8');
   await writeFile(join(runDir, 'agent-stderr.log'), run.rawStderr, 'utf8');
   deps.log(`[${request.id}] agent declared ${run.status} in ${(run.durationMs / 1000).toFixed(0)}s`);
 
-  if (await git.configChanged(snapshot)) {
-    await git.restoreConfig(snapshot);
-    return {
-      outcome: 'failed',
-      reasons: ['agent changed the repository git config; it was restored and nothing was published'],
-      report: run.report,
-      costUsd: run.costUsd,
-      attention: [],
-      keepWorktree: true,
-    };
-  }
-
-  // Read HEAD once, then derive all evidence from that exact commit: a process the agent
-  // left behind cannot move the branch between the checks and the push.
-  const head = await git.headSha(worktree);
+  // The agent's HEAD is copied into the main clone once; every check below uses that SHA,
+  // compared against the base SHA recorded before the agent ran.
+  const head = await git.collect(workspace, request.id);
   const commitsAhead = await git.commitsAhead(head);
   const changed = await git.changedFiles(head);
   const preliminary = {
@@ -209,29 +145,35 @@ async function runAgentAndJudge(
     contractViolation: run.contractViolation,
     commit: commitsAhead > 0 ? head : undefined,
     commitsAhead,
-    dirtyFiles: await git.dirtyFiles(worktree),
+    dirtyFiles: await git.dirtyFiles(workspace),
     forbiddenTouched: findForbidden(changed, config.forbiddenPaths),
   };
   const evidence: Evidence = {
     ...preliminary,
     gates:
       preliminary.commit && gatesAreWorthRunning(preliminary)
-        ? await verifyCommit(preliminary.commit, request.id, snapshot, deps)
+        ? await verifyCommit(preliminary.commit, request.id, deps)
         : [],
   };
   const attention = findForbidden(changed, config.attentionPaths);
   const decision = decide(evidence);
-  await writeJson(join(runDir, 'evidence.json'), { ...evidence, changedFiles: changed, attention, decision });
+  await writeJson(join(runDir, 'evidence.json'), {
+    ...evidence,
+    base: baseSha,
+    changedFiles: changed,
+    attention,
+    decision,
+  });
 
-  const base = { report: run.report, costUsd: run.costUsd, commit: evidence.commit, attention };
+  const result = { report: run.report, costUsd: run.costUsd, commit: evidence.commit, attention };
   if (!decision.publish) {
     // A blocked run has no code worth inspecting; rejected and failed runs keep theirs.
-    return { ...base, outcome: decision.outcome, reasons: decision.reasons, keepWorktree: decision.outcome !== 'blocked' };
+    return { ...result, outcome: decision.outcome, reasons: decision.reasons, keepWorkspace: decision.outcome !== 'blocked' };
   }
-  if (!config.push) return { ...base, outcome: 'ready', reasons: [], keepWorktree: true };
+  if (!config.push) return { ...result, outcome: 'ready', reasons: [], keepWorkspace: true };
 
   await git.push(evidence.commit as string, branch);
-  return { ...base, outcome: 'published', reasons: [], keepWorktree: false };
+  return { ...result, outcome: 'published', reasons: [], keepWorkspace: false };
 }
 
 /**
@@ -256,13 +198,13 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
       reasons: [`orchestrator error: ${(error as Error).message}`],
       report: '',
       attention: [],
-      keepWorktree: true,
+      keepWorkspace: true,
     };
   }
 
-  if (!result.keepWorktree) {
-    await deps.git.removeWorktree(paths.worktree(request.id)).catch((error: Error) => {
-      deps.log(`[${request.id}] could not remove worktree: ${error.message}`);
+  if (!result.keepWorkspace) {
+    await deps.git.removeWorkspace(paths.workspace(request.id)).catch((error: Error) => {
+      deps.log(`[${request.id}] could not remove workspace: ${error.message}`);
     });
   }
 

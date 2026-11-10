@@ -25,7 +25,8 @@ export interface AgentRun {
 }
 
 export interface AgentRunInput {
-  worktree: string;
+  /** The agent's own repository: the only place it works in. */
+  workspace: string;
   runDir: string;
   prompt: string;
 }
@@ -74,13 +75,13 @@ async function readOptional(path: string): Promise<string | undefined> {
 }
 
 /**
- * Runs the agent headless inside the worktree. The prompt goes through stdin; the run
+ * Runs the agent headless inside its workspace. The prompt goes through stdin; the run
  * directory is granted with --add-dir so the agent can write the contract files there.
  * Anything outside the contract (crash, timeout, missing or invalid STATUS) becomes "failed".
  */
 export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): AgentRunner {
   return {
-    async run({ worktree, runDir, prompt }) {
+    async run({ workspace, runDir, prompt }) {
       const statusPath = join(runDir, STATUS_FILE);
       const reportPath = join(runDir, REPORT_FILE);
       // A retry must never read the contract files of a previous attempt.
@@ -97,7 +98,7 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
         : {};
 
       const result = await exec(settings.command, [...settings.args, '--add-dir', runDir], {
-        cwd: worktree,
+        cwd: workspace,
         input: prompt,
         timeoutMs: settings.timeoutMs,
         env: sandboxEnv({ remote: settings.remote, passEnv: settings.passEnv ?? [], extra: author }),

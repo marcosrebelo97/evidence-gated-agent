@@ -74,23 +74,30 @@ switch (scenario) {
     break;
   }
   case 'tamper-config': {
-    // Redirects the shared remote and plants an fsmonitor command in the shared config.
+    // Points its remote at a decoy and plants an fsmonitor command, hoping the orchestrator uses them.
     commit('feature.txt', 'ok\n');
-    const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir').toString().trim();
-    git('config', 'remote.origin.url', join(commonDir, 'decoy.git'));
-    git('config', 'core.fsmonitor', `touch ${join(commonDir, 'FSMONITOR_RAN')}`);
+    git('remote', 'add', 'origin', join(runDir, 'decoy.git'));
+    git('config', 'core.fsmonitor', `touch ${join(runDir, 'FSMONITOR_RAN')}`);
     finish('implemented', 'Feito.');
     break;
   }
   case 'plant-hooks': {
-    // Hooks live in the shared repository: they would run on the orchestrator's git commands.
+    // Hooks that would run on the orchestrator's git commands, if it ran any in this repository.
     commit('feature.txt', 'ok\n');
-    const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir').toString().trim();
     for (const hook of ['post-checkout', 'pre-push', 'reference-transaction']) {
-      const file = join(commonDir, 'hooks', hook);
-      writeFileSync(file, `#!/bin/sh\necho ${hook} >> "${join(commonDir, 'HOOK_RAN')}"\n`);
+      const file = join('.git', 'hooks', hook);
+      writeFileSync(file, `#!/bin/sh\necho ${hook} >> "${join(runDir, 'HOOK_RAN')}"\n`);
       chmodSync(file, 0o755);
     }
+    finish('implemented', 'Feito.');
+    break;
+  }
+  case 'move-base-ref': {
+    // Hides a forbidden commit by moving the base the diff would be computed against.
+    commit('.env', 'SECRET=1\n');
+    const sneaky = git('rev-parse', 'HEAD').toString().trim();
+    commit('feature.txt', 'ok\n');
+    git('update-ref', 'refs/remotes/origin/main', sneaky);
     finish('implemented', 'Feito.');
     break;
   }

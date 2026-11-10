@@ -26,6 +26,12 @@ const featureGate = {
   ],
 };
 
+async function attemptDir(workDir: string): Promise<string> {
+  const base = join(workDir, 'runs', 'REQ-1');
+  const [attempt] = await readdir(base);
+  return join(base, attempt as string);
+}
+
 async function setup(scenario: string) {
   const fixture = await createGitFixture();
   const inboxDir = join(fixture.root, 'inbox');
@@ -69,7 +75,7 @@ describe('end to end with real git and a fake agent', () => {
     expect(git(fixture.remote, 'log', '-1', '--format=%an', BRANCH).trim()).toBe('support-agent');
     expect(git(fixture.clone, 'branch', '--show-current').trim()).toBe('main');
     expect(git(fixture.clone, 'status', '--porcelain').trim()).toBe('');
-    expect(existsSync(runnerPaths(config.workDir).worktree('REQ-1'))).toBe(false);
+    expect(existsSync(runnerPaths(config.workDir).workspace('REQ-1'))).toBe(false);
     expect(notifier.sent[0]?.report).toContain('feature.txt criado');
   });
 
@@ -87,13 +93,14 @@ describe('end to end with real git and a fake agent', () => {
     ['leave-dirty', /uncommitted changes .*scratch\.txt/],
     ['ignored-crutch', /gate "feature-check" failed/],
     ['touch-env', /forbidden paths touched: \.env/],
-  ])('rejects "%s" and keeps the worktree for inspection', async (scenario, reason) => {
+    ['move-base-ref', /forbidden paths touched: \.env/],
+  ])('rejects "%s" and keeps the workspace for inspection', async (scenario, reason) => {
     const { fixture, config, deps } = await setup(scenario);
     const [run] = (await pollOnce(deps)).processed;
     expect(run?.outcome).toBe('rejected');
     expect(run?.reasons.join('\n')).toMatch(reason);
     expect(remoteBranches(fixture.remote)).toEqual(['main']);
-    expect(existsSync(runnerPaths(config.workDir).worktree('REQ-1'))).toBe(true);
+    expect(existsSync(runnerPaths(config.workDir).workspace('REQ-1'))).toBe(true);
   });
 
   it('keeps publication with the orchestrator: the agent can neither push nor read its secrets', async () => {
@@ -109,24 +116,22 @@ describe('end to end with real git and a fake agent', () => {
     }
   });
 
-  it('fails, publishes nothing and restores the main clone when the agent rewrites the shared git config', async () => {
-    const { fixture, deps } = await setup('tamper-config');
-    const before = git(fixture.clone, 'remote', 'get-url', 'origin').trim();
-    const [run] = (await pollOnce(deps)).processed;
-    expect(run?.outcome).toBe('failed');
-    expect(run?.reasons.join('\n')).toMatch(/changed the repository git config/);
-    expect(remoteBranches(fixture.remote)).toEqual(['main']);
-    expect(git(fixture.clone, 'remote', 'get-url', 'origin').trim()).toBe(before);
-    expect(await readFile(join(fixture.clone, '.git', 'config'), 'utf8')).not.toContain('fsmonitor');
-    expect(existsSync(join(fixture.clone, '.git', 'FSMONITOR_RAN'))).toBe(false);
-  });
-
-  it('never runs hooks the agent planted, while still publishing its verified commit', async () => {
-    const { fixture, deps } = await setup('plant-hooks');
+  it('ignores the remote and config the agent writes in its workspace', async () => {
+    const { fixture, config, deps } = await setup('tamper-config');
+    const before = await readFile(join(fixture.clone, '.git', 'config'), 'utf8');
     const [run] = (await pollOnce(deps)).processed;
     expect(run?.outcome).toBe('published');
     expect(remoteBranches(fixture.remote).sort()).toEqual([BRANCH, 'main'].sort());
-    expect(existsSync(join(fixture.clone, '.git', 'HOOK_RAN'))).toBe(false);
+    expect(await readFile(join(fixture.clone, '.git', 'config'), 'utf8')).toBe(before);
+    expect(existsSync(join(await attemptDir(config.workDir), 'FSMONITOR_RAN'))).toBe(false);
+  });
+
+  it('never runs hooks the agent planted, while still publishing its verified commit', async () => {
+    const { fixture, config, deps } = await setup('plant-hooks');
+    const [run] = (await pollOnce(deps)).processed;
+    expect(run?.outcome).toBe('published');
+    expect(remoteBranches(fixture.remote).sort()).toEqual([BRANCH, 'main'].sort());
+    expect(existsSync(join(await attemptDir(config.workDir), 'HOOK_RAN'))).toBe(false);
   });
 
   it('turns an agent crash into failed', async () => {

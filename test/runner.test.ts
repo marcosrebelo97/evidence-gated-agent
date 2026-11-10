@@ -34,12 +34,12 @@ describe('agent runner', () => {
       ...settings,
       gitAuthor: { name: 'support-agent', email: 'agent@example.com' },
     });
-    await runner.run({ worktree: '/wt', runDir, prompt: 'PROMPT' });
+    await runner.run({ workspace: '/ws', runDir, prompt: 'PROMPT' });
     expect(exec.calls[0]).toMatchObject({
       command: 'claude',
       args: ['-p', '--output-format', 'json', '--add-dir', runDir],
       options: {
-        cwd: '/wt',
+        cwd: '/ws',
         input: 'PROMPT',
         timeoutMs: 60_000,
         inheritEnv: false,
@@ -56,7 +56,7 @@ describe('agent runner', () => {
   it('does not hand the orchestrator environment to the agent', async () => {
     process.env.TELEGRAM_BOT_TOKEN = 'secret';
     const exec = fakeExec({ STATUS: 'implemented' });
-    await createAgentRunner(exec, { ...settings, passEnv: ['ANTHROPIC_API_KEY'] }).run({ worktree: '/wt', runDir, prompt: 'p' });
+    await createAgentRunner(exec, { ...settings, passEnv: ['ANTHROPIC_API_KEY'] }).run({ workspace: '/ws', runDir, prompt: 'p' });
     delete process.env.TELEGRAM_BOT_TOKEN;
     const { env } = (exec.calls[0] as { options: { env: Record<string, string> } }).options;
     expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
@@ -66,14 +66,14 @@ describe('agent runner', () => {
   it('reads the declared status, the report and the session cost', async () => {
     const stdout = JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 0.31, num_turns: 18 });
     const runner = createAgentRunner(fakeExec({ STATUS: ' Implemented ', 'REPORT.md': '# Relatório' }, { stdout }), settings);
-    const run = await runner.run({ worktree: '/wt', runDir, prompt: 'p' });
+    const run = await runner.run({ workspace: '/ws', runDir, prompt: 'p' });
     expect(run).toMatchObject({ status: 'implemented', report: '# Relatório', costUsd: 0.31, numTurns: 18 });
     expect(run.contractViolation).toBeUndefined();
   });
 
   it('accepts "blocked" as a first-class result', async () => {
     const runner = createAgentRunner(fakeExec({ STATUS: 'blocked', 'REPORT.md': '1. Qual data?' }), settings);
-    expect((await runner.run({ worktree: '/wt', runDir, prompt: 'p' })).status).toBe('blocked');
+    expect((await runner.run({ workspace: '/ws', runDir, prompt: 'p' })).status).toBe('blocked');
   });
 
   it.each([
@@ -84,7 +84,7 @@ describe('agent runner', () => {
     ['session error', { STATUS: 'implemented' }, { stdout: '{"is_error":true}' }, /ended with an error/],
   ])('forces "failed" on %s, whatever the agent declared', async (_name, files, result, reason) => {
     const runner = createAgentRunner(fakeExec(files, result), settings);
-    const run = await runner.run({ worktree: '/wt', runDir, prompt: 'p' });
+    const run = await runner.run({ workspace: '/ws', runDir, prompt: 'p' });
     expect(run.status).toBe('failed');
     expect(run.contractViolation).toMatch(reason);
   });
@@ -92,7 +92,7 @@ describe('agent runner', () => {
   it('never reads the contract files of a previous attempt', async () => {
     await writeFile(join(runDir, 'STATUS'), 'implemented');
     const runner = createAgentRunner(fakeExec({}), settings);
-    const run = await runner.run({ worktree: '/wt', runDir, prompt: 'p' });
+    const run = await runner.run({ workspace: '/ws', runDir, prompt: 'p' });
     expect(run.status).toBe('failed');
   });
 });
