@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import type { AgentRun, AgentRunner, AgentStatus } from '../../src/agent/runner.js';
 import { parseConfig, type ResolvedConfig } from '../../src/config.js';
 import type { GateResult } from '../../src/gates.js';
-import type { GitOps } from '../../src/git.js';
+import type { ConfigSnapshot, GitOps } from '../../src/git.js';
 import type { Notifier, RunSummary } from '../../src/notify.js';
 import type { PipelineDeps } from '../../src/pipeline.js';
 import { FileRequestSource } from '../../src/source.js';
@@ -24,6 +24,9 @@ export class FakeGit implements GitOps {
   static readonly SHA = 'a'.repeat(40);
   state: WorkspaceState = { commitsAhead: 0, dirtyFiles: [], changedFiles: [] };
   failOn?: keyof GitOps;
+  /** Simulates something rewriting the shared .git/config; restoreConfig clears it. */
+  configTampered = false;
+  restored = 0;
 
   private check(op: keyof GitOps, detail = ''): void {
     this.calls.push(detail ? `${op} ${detail}` : op);
@@ -58,6 +61,18 @@ export class FakeGit implements GitOps {
   async createVerificationWorktree(_path: string, commit: string) {
     this.check('createVerificationWorktree', commit.slice(0, 7));
   }
+  async snapshotConfig(): Promise<ConfigSnapshot> {
+    this.check('snapshotConfig');
+    return { file: '/fake/config', content: '' };
+  }
+  async configChanged() {
+    return this.configTampered;
+  }
+  async restoreConfig() {
+    this.check('restoreConfig');
+    this.configTampered = false;
+    this.restored++;
+  }
   async push(commit: string, branch: string) {
     this.check('push', branch);
     this.pushed.push(branch);
@@ -71,12 +86,14 @@ export class FakeAgent implements AgentRunner {
   declared: AgentStatus = 'implemented';
   report = 'relatório';
   effect: Partial<WorkspaceState> = { commitsAhead: 1, changedFiles: ['src/feature.ts'] };
+  tamperConfig = false;
 
   constructor(private readonly git: FakeGit) {}
 
   async run({ prompt }: { prompt: string }): Promise<AgentRun> {
     this.prompts.push(prompt);
     this.git.state = { ...this.git.state, ...this.effect };
+    if (this.tamperConfig) this.git.configTampered = true;
     return {
       status: this.declared,
       report: this.report,

@@ -4,7 +4,7 @@ import { buildPrompt } from './agent/prompt.js';
 import { REPORT_FILE, STATUS_FILE, type AgentRunner } from './agent/runner.js';
 import type { ResolvedConfig } from './config.js';
 import { decide, gatesAreWorthRunning, type Evidence, type GateResult } from './gates.js';
-import type { GitOps } from './git.js';
+import type { ConfigSnapshot, GitOps } from './git.js';
 import type { Notifier, RunSummary } from './notify.js';
 import { branchName, findForbidden } from './scope.js';
 import type { LoadedRequest, RequestSource } from './source.js';
@@ -64,19 +64,42 @@ async function freshWorktree(git: GitOps, path: string, create: () => Promise<vo
   await create();
 }
 
+const CONFIG_INTEGRITY_GATE = 'git-config-integrity';
+
 /**
  * Re-runs setup and gates in a new detached worktree at the exact commit. Nothing the agent
  * left behind (ignored files, a modified node_modules) and nothing the tests do to the
- * agent's branch can influence the verdict: what is verified is what gets pushed.
+ * agent's branch can influence the verdict. The commit's tests share the repository config
+ * with the main clone, so a change to it fails verification and is undone before any push.
  */
-async function verifyCommit(commit: string, id: string, deps: PipelineDeps): Promise<GateResult[]> {
+async function verifyCommit(
+  commit: string,
+  id: string,
+  snapshot: ConfigSnapshot,
+  deps: PipelineDeps,
+): Promise<GateResult[]> {
   const path = runnerPaths(deps.config.workDir).verification(id);
   await freshWorktree(deps.git, path, () => deps.git.createVerificationWorktree(path, commit));
+  const startedAt = Date.now();
   try {
     const setup = await deps.runSetup(path, { trusted: false });
     const brokenSetup = setup.filter((step) => !step.passed);
-    if (brokenSetup.length > 0) return brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }));
-    return await deps.runGates(path);
+    const results =
+      brokenSetup.length > 0
+        ? brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }))
+        : await deps.runGates(path);
+    if (await deps.git.configChanged(snapshot)) {
+      await deps.git.restoreConfig(snapshot);
+      results.push({
+        name: CONFIG_INTEGRITY_GATE,
+        passed: false,
+        exitCode: 1,
+        timedOut: false,
+        durationMs: Date.now() - startedAt,
+        outputTail: 'the commit changed the repository git config during verification; it was restored',
+      });
+    }
+    return results;
   } finally {
     await deps.git.removeWorktree(path).catch((error: Error) => {
       deps.log(`[${id}] could not remove verification worktree: ${error.message}`);
@@ -123,6 +146,29 @@ async function execute(
     };
   }
 
+  // The worktree shares .git/config with the main clone. Whatever the agent writes there
+  // (remote URL, fsmonitor, hooksPath) is detected and undone before the orchestrator relies on it.
+  const snapshot = await git.snapshotConfig();
+  try {
+    return await runAgentAndJudge(loaded, branch, runDir, worktree, attachments, snapshot, deps);
+  } finally {
+    // Safety net for any path that left early: the main clone keeps its own config.
+    if (await git.configChanged(snapshot).catch(() => false)) await git.restoreConfig(snapshot);
+  }
+}
+
+async function runAgentAndJudge(
+  loaded: LoadedRequest,
+  branch: string,
+  runDir: string,
+  worktree: string,
+  attachments: string[],
+  snapshot: ConfigSnapshot,
+  deps: PipelineDeps,
+): Promise<Execution> {
+  const { config, git } = deps;
+  const { request } = loaded;
+
   const prompt = buildPrompt({
     template: deps.playbook,
     request,
@@ -141,12 +187,27 @@ async function execute(
   await writeFile(join(runDir, 'agent-stderr.log'), run.rawStderr, 'utf8');
   deps.log(`[${request.id}] agent declared ${run.status} in ${(run.durationMs / 1000).toFixed(0)}s`);
 
-  const changed = await git.changedFiles(worktree);
-  const commitsAhead = await git.commitsAhead(worktree);
+  if (await git.configChanged(snapshot)) {
+    await git.restoreConfig(snapshot);
+    return {
+      outcome: 'failed',
+      reasons: ['agent changed the repository git config; it was restored and nothing was published'],
+      report: run.report,
+      costUsd: run.costUsd,
+      attention: [],
+      keepWorktree: true,
+    };
+  }
+
+  // Read HEAD once, then derive all evidence from that exact commit: a process the agent
+  // left behind cannot move the branch between the checks and the push.
+  const head = await git.headSha(worktree);
+  const commitsAhead = await git.commitsAhead(head);
+  const changed = await git.changedFiles(head);
   const preliminary = {
     declared: run.status,
     contractViolation: run.contractViolation,
-    commit: commitsAhead > 0 ? await git.headSha(worktree) : undefined,
+    commit: commitsAhead > 0 ? head : undefined,
     commitsAhead,
     dirtyFiles: await git.dirtyFiles(worktree),
     forbiddenTouched: findForbidden(changed, config.forbiddenPaths),
@@ -155,7 +216,7 @@ async function execute(
     ...preliminary,
     gates:
       preliminary.commit && gatesAreWorthRunning(preliminary)
-        ? await verifyCommit(preliminary.commit, request.id, deps)
+        ? await verifyCommit(preliminary.commit, request.id, snapshot, deps)
         : [],
   };
   const attention = findForbidden(changed, config.attentionPaths);

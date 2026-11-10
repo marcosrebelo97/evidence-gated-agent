@@ -122,6 +122,36 @@ describe('pollOnce — the agent is not trusted', () => {
     expect(h.git.calls.filter((call) => call === 'removeWorktree REQ-1')).toHaveLength(1);
   });
 
+  it('fails and restores the shared git config when the agent changes it', async () => {
+    h.agent.tamperConfig = true;
+    await h.addRequest(approved());
+    const [run] = (await pollOnce(h.deps)).processed;
+    expect(run).toMatchObject({ outcome: 'failed', reasons: [expect.stringMatching(/changed the repository git config/)] });
+    expect(h.git.restored).toBe(1);
+    expect(h.git.configTampered).toBe(false);
+    expect(h.gateRuns).toBe(0);
+    expect(h.git.pushed).toEqual([]);
+  });
+
+  it('rejects and restores when the commit changes the git config during verification', async () => {
+    h.deps.runGates = async () => {
+      h.git.configTampered = true;
+      return [gate('tests')];
+    };
+    await h.addRequest(approved());
+    const [run] = (await pollOnce(h.deps)).processed;
+    expect(run).toMatchObject({ outcome: 'rejected', reasons: ['gate "git-config-integrity" failed (exit 1)'] });
+    expect(h.git.configTampered).toBe(false);
+    expect(h.git.pushed).toEqual([]);
+  });
+
+  it('reads HEAD once and derives every check from that commit', async () => {
+    await h.addRequest(approved());
+    await pollOnce(h.deps);
+    const order = h.git.calls.filter((call) => ['headSha', 'commitsAhead', 'changedFiles'].includes(call));
+    expect(order).toEqual(['headSha', 'commitsAhead', 'changedFiles']);
+  });
+
   it('rejects when a forbidden path was touched', async () => {
     h.agent.effect = { commitsAhead: 1, changedFiles: ['src/a.ts', 'config/.env.production'] };
     await h.addRequest(approved());

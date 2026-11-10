@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -107,6 +107,26 @@ describe('end to end with real git and a fake agent', () => {
     } finally {
       delete process.env.EGA_TEST_SECRET;
     }
+  });
+
+  it('fails, publishes nothing and restores the main clone when the agent rewrites the shared git config', async () => {
+    const { fixture, deps } = await setup('tamper-config');
+    const before = git(fixture.clone, 'remote', 'get-url', 'origin').trim();
+    const [run] = (await pollOnce(deps)).processed;
+    expect(run?.outcome).toBe('failed');
+    expect(run?.reasons.join('\n')).toMatch(/changed the repository git config/);
+    expect(remoteBranches(fixture.remote)).toEqual(['main']);
+    expect(git(fixture.clone, 'remote', 'get-url', 'origin').trim()).toBe(before);
+    expect(await readFile(join(fixture.clone, '.git', 'config'), 'utf8')).not.toContain('fsmonitor');
+    expect(existsSync(join(fixture.clone, '.git', 'FSMONITOR_RAN'))).toBe(false);
+  });
+
+  it('never runs hooks the agent planted, while still publishing its verified commit', async () => {
+    const { fixture, deps } = await setup('plant-hooks');
+    const [run] = (await pollOnce(deps)).processed;
+    expect(run?.outcome).toBe('published');
+    expect(remoteBranches(fixture.remote).sort()).toEqual([BRANCH, 'main'].sort());
+    expect(existsSync(join(fixture.clone, '.git', 'HOOK_RAN'))).toBe(false);
   });
 
   it('turns an agent crash into failed', async () => {

@@ -1,7 +1,7 @@
 // Stands in for `claude -p` in end-to-end tests.
 // Usage: node fake-agent.mjs <scenario> [claude flags...] --add-dir <runDir>  (prompt on stdin)
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -71,6 +71,27 @@ switch (scenario) {
     }
     const secret = process.env.EGA_TEST_SECRET === undefined ? 'absent' : 'present';
     finish('implemented', `push=${push} secret=${secret}`);
+    break;
+  }
+  case 'tamper-config': {
+    // Redirects the shared remote and plants an fsmonitor command in the shared config.
+    commit('feature.txt', 'ok\n');
+    const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir').toString().trim();
+    git('config', 'remote.origin.url', join(commonDir, 'decoy.git'));
+    git('config', 'core.fsmonitor', `touch ${join(commonDir, 'FSMONITOR_RAN')}`);
+    finish('implemented', 'Feito.');
+    break;
+  }
+  case 'plant-hooks': {
+    // Hooks live in the shared repository: they would run on the orchestrator's git commands.
+    commit('feature.txt', 'ok\n');
+    const commonDir = git('rev-parse', '--path-format=absolute', '--git-common-dir').toString().trim();
+    for (const hook of ['post-checkout', 'pre-push', 'reference-transaction']) {
+      const file = join(commonDir, 'hooks', hook);
+      writeFileSync(file, `#!/bin/sh\necho ${hook} >> "${join(commonDir, 'HOOK_RAN')}"\n`);
+      chmodSync(file, 0o755);
+    }
+    finish('implemented', 'Feito.');
     break;
   }
   case 'crash':
