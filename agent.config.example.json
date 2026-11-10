@@ -5,6 +5,7 @@
   "branchPrefix": "agent/",
   "inboxDir": "./examples/inbox",
   "forbiddenPaths": [".env", ".env.*", "**/*.pem", "**/*.key", "**/secrets/**"],
+  "isolateHome": true,
   "setup": [{ "name": "install", "command": "npm", "args": ["ci"], "timeoutMs": 600000 }],
   "agent": {
     "command": "claude",
@@ -20,6 +21,7 @@
       "--disallowedTools", "Bash(git push:*)", "WebFetch", "WebSearch"
     ],
     "timeoutMs": 1800000,
+    "passEnv": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
     "gitAuthor": { "name": "support-agent", "email": "support-agent@users.noreply.github.com" }
   },
   "gates": [

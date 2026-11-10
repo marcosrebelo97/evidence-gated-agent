@@ -29,6 +29,8 @@ export interface AgentRunInput {
   workspace: string;
   runDir: string;
   prompt: string;
+  /** The agent's own HOME, when isolated. */
+  home?: string | undefined;
 }
 
 export interface AgentRunner {
@@ -81,7 +83,7 @@ async function readOptional(path: string): Promise<string | undefined> {
  */
 export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): AgentRunner {
   return {
-    async run({ workspace, runDir, prompt }) {
+    async run({ workspace, runDir, prompt, home }) {
       const statusPath = join(runDir, STATUS_FILE);
       const reportPath = join(runDir, REPORT_FILE);
       // A retry must never read the contract files of a previous attempt.
@@ -101,7 +103,7 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
         cwd: workspace,
         input: prompt,
         timeoutMs: settings.timeoutMs,
-        env: sandboxEnv({ remote: settings.remote, passEnv: settings.passEnv ?? [], extra: author }),
+        env: sandboxEnv({ remote: settings.remote, passEnv: settings.passEnv ?? [], home, extra: author }),
         inheritEnv: false,
         killGroupOnExit: true,
       });

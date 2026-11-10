@@ -134,6 +134,15 @@ describe('end to end with real git and a fake agent', () => {
     expect(existsSync(join(await attemptDir(config.workDir), 'HOOK_RAN'))).toBe(false);
   });
 
+  it('runs the agent with a HOME of its own, removed once the run is published', async () => {
+    const { config, notifier, deps } = await setup('report-home');
+    const [run] = (await pollOnce(deps)).processed;
+    const home = runnerPaths(config.workDir).home(runnerPaths(config.workDir).workspace('REQ-1'));
+    expect(run?.outcome).toBe('published');
+    expect(notifier.sent[0]?.report).toBe(`home=${home}`);
+    expect(existsSync(home)).toBe(false);
+  });
+
   it('turns an agent crash into failed', async () => {
     const { fixture, deps } = await setup('crash');
     const [run] = (await pollOnce(deps)).processed;

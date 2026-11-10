@@ -22,9 +22,9 @@ export async function createDefaultDeps(config: ResolvedConfig): Promise<Pipelin
     source: new FileRequestSource(config.inboxDir),
     git: createGit(exec, config),
     agent: createAgentRunner(exec, { ...config.agent, remote: config.remote }),
-    runSetup: (worktree, { trusted }) =>
-      runCommands(exec, config.setup, worktree, { remote: config.remote, allowGitTransport: trusted }),
-    runGates: (worktree) => runCommands(exec, config.gates, worktree, { remote: config.remote }),
+    runSetup: (dir, { trusted, home }) =>
+      runCommands(exec, config.setup, dir, { remote: config.remote, allowGitTransport: trusted, home }),
+    runGates: (dir, { home }) => runCommands(exec, config.gates, dir, { remote: config.remote, home }),
     notifier: createNotifier(config),
     playbook: await readFile(config.agent.playbook, 'utf8'),
     now: () => new Date(),

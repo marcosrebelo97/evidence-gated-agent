@@ -76,8 +76,11 @@ export class FakeAgent implements AgentRunner {
 
   constructor(private readonly git: FakeGit) {}
 
-  async run({ prompt }: { prompt: string }): Promise<AgentRun> {
+  readonly homes: (string | undefined)[] = [];
+
+  async run({ prompt, home }: { prompt: string; home?: string | undefined }): Promise<AgentRun> {
     this.prompts.push(prompt);
+    this.homes.push(home);
     this.git.state = { ...this.git.state, ...this.effect };
     return {
       status: this.declared,

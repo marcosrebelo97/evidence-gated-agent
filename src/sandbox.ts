@@ -1,9 +1,9 @@
 /** Variables every child gets. Everything else (tokens, cloud credentials, SSH agent) is dropped. */
 const BASE_VARIABLES = [
   'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LANGUAGE', 'TERM', 'TMPDIR', 'TZ',
-  // Network and tool configuration, without which claude and npm fail behind a corporate proxy.
+  // Network settings, without which claude and npm fail behind a corporate proxy.
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy',
-  'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'XDG_CONFIG_HOME', 'CLAUDE_CONFIG_DIR',
+  'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE',
 ];
 
 export interface SandboxEnvOptions {
@@ -16,6 +16,12 @@ export interface SandboxEnvOptions {
    * which may need git dependencies. Never for the agent or for anything on its commit.
    */
   allowGitTransport?: boolean;
+  /**
+   * A HOME of its own. The child then cannot read or plant the user's dotfiles
+   * (~/.gitconfig, ~/.npmrc, ~/.ssh, ~/.claude), which the orchestrator's own
+   * commands rely on.
+   */
+  home?: string | undefined;
   extra?: Record<string, string>;
   source?: NodeJS.ProcessEnv;
 }
@@ -35,6 +41,7 @@ export function sandboxEnv({
   passEnv = [],
   remote,
   allowGitTransport = false,
+  home,
   extra = {},
   source = process.env,
 }: SandboxEnvOptions): Record<string, string> {
@@ -52,6 +59,7 @@ export function sandboxEnv({
     env[`GIT_CONFIG_VALUE_${index}`] = value;
   });
   env.GIT_TERMINAL_PROMPT = '0';
+  if (home) env.HOME = home;
 
   return { ...env, ...extra };
 }

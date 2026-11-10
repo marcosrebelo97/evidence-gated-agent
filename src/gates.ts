@@ -23,7 +23,7 @@ export async function runCommands(
   exec: Exec,
   commands: readonly CommandSpec[],
   cwd: string,
-  sandbox?: { remote: string; allowGitTransport?: boolean },
+  sandbox?: { remote: string; allowGitTransport?: boolean; home?: string | undefined },
 ): Promise<GateResult[]> {
   const results: GateResult[] = [];
   for (const spec of commands) {
@@ -36,6 +36,7 @@ export async function runCommands(
               remote: sandbox.remote,
               passEnv: spec.passEnv,
               allowGitTransport: sandbox.allowGitTransport ?? false,
+              home: sandbox.home,
             }),
             inheritEnv: false,
             killGroupOnExit: true,

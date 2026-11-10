@@ -164,6 +164,8 @@ describe('the agent cannot reach the orchestrator through git', () => {
     expect(insideWorkspace).toHaveLength(1);
     expect(insideWorkspace[0]?.args).toContain('status');
     expect(insideWorkspace[0]?.options.inheritEnv).toBe(false);
+    // Nor the user's git config: a filter defined there (e.g. git-lfs) would act with the user's credentials.
+    expect(insideWorkspace[0]?.options.env).toMatchObject({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
   });
 });
 

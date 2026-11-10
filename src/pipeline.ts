@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { buildPrompt } from './agent/prompt.js';
 import { REPORT_FILE, STATUS_FILE, type AgentRunner } from './agent/runner.js';
@@ -20,8 +20,8 @@ export interface PipelineDeps {
    * `trusted`: the workspace holds only the untouched base (before the agent runs), so the
    * setup may use git transports, e.g. for git dependencies. On the agent's commit it may not.
    */
-  runSetup: (dir: string, options: { trusted: boolean }) => Promise<GateResult[]>;
-  runGates: (dir: string) => Promise<GateResult[]>;
+  runSetup: (dir: string, options: { trusted: boolean; home: string | undefined }) => Promise<GateResult[]>;
+  runGates: (dir: string, options: { home: string | undefined }) => Promise<GateResult[]>;
   notifier: Notifier;
   playbook: string;
   now: () => Date;
@@ -36,6 +36,8 @@ export function runnerPaths(workDir: string) {
     runDir: (id: string, startedAt: Date) => join(workDir, 'runs', id, startedAt.toISOString().replace(/[:.]/g, '-')),
     workspace: (id: string) => join(workDir, 'workspaces', id),
     verification: (id: string) => join(workDir, 'workspaces', `${id}.verify`),
+    /** The isolated HOME that goes with a workspace or verification directory. */
+    home: (dir: string) => `${dir}.home`,
   };
 }
 
@@ -57,6 +59,21 @@ async function prepareRunDir(runDir: string, loaded: LoadedRequest): Promise<str
   return copies;
 }
 
+/** A new, empty HOME for one run, or undefined when isolation is off. */
+async function freshHome(dir: string, deps: PipelineDeps): Promise<string | undefined> {
+  if (!deps.config.isolateHome) return undefined;
+  const home = runnerPaths(deps.config.workDir).home(dir);
+  await rm(home, { recursive: true, force: true });
+  await mkdir(home, { recursive: true });
+  return home;
+}
+
+/** Deletes a workspace or verification directory together with its HOME. */
+async function discard(dir: string, deps: PipelineDeps): Promise<void> {
+  await deps.git.removeWorkspace(dir);
+  await rm(runnerPaths(deps.config.workDir).home(dir), { recursive: true, force: true });
+}
+
 /**
  * Re-runs setup and gates in a new repository holding only the exact commit. Nothing the
  * agent left behind (ignored files, a modified node_modules, its repository config) and
@@ -66,12 +83,13 @@ async function verifyCommit(commit: string, id: string, deps: PipelineDeps): Pro
   const path = runnerPaths(deps.config.workDir).verification(id);
   try {
     await deps.git.createVerification(path, commit);
-    const setup = await deps.runSetup(path, { trusted: false });
+    const home = await freshHome(path, deps);
+    const setup = await deps.runSetup(path, { trusted: false, home });
     const brokenSetup = setup.filter((step) => !step.passed);
     if (brokenSetup.length > 0) return brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }));
-    return await deps.runGates(path);
+    return await deps.runGates(path, { home });
   } finally {
-    await deps.git.removeWorkspace(path).catch((error: Error) => {
+    await discard(path, deps).catch((error: Error) => {
       deps.log(`[${id}] could not remove verification directory: ${error.message}`);
     });
   }
@@ -102,9 +120,10 @@ async function execute(
   const baseSha = await git.fetch();
   // A previous attempt may have kept its workspace for inspection; this starts clean.
   await git.createWorkspace(workspace, branch);
+  const home = await freshHome(workspace, deps);
 
   // Still only the base here: nothing of the agent's has run yet.
-  const setup = await deps.runSetup(workspace, { trusted: true });
+  const setup = await deps.runSetup(workspace, { trusted: true, home });
   await writeJson(join(runDir, 'setup.json'), setup);
   const brokenSetup = setup.filter((step) => !step.passed);
   if (brokenSetup.length > 0) {
@@ -130,7 +149,7 @@ async function execute(
   await writeFile(join(runDir, 'prompt.md'), prompt, 'utf8');
 
   deps.log(`[${request.id}] agent started on ${branch}`);
-  const run = await deps.agent.run({ workspace, runDir, prompt });
+  const run = await deps.agent.run({ workspace, runDir, prompt, home });
   await writeFile(join(runDir, 'agent-output.json'), run.rawOutput, 'utf8');
   await writeFile(join(runDir, 'agent-stderr.log'), run.rawStderr, 'utf8');
   deps.log(`[${request.id}] agent declared ${run.status} in ${(run.durationMs / 1000).toFixed(0)}s`);
@@ -203,7 +222,7 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
   }
 
   if (!result.keepWorkspace) {
-    await deps.git.removeWorkspace(paths.workspace(request.id)).catch((error: Error) => {
+    await discard(paths.workspace(request.id), deps).catch((error: Error) => {
       deps.log(`[${request.id}] could not remove workspace: ${error.message}`);
     });
   }

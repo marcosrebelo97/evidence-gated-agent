@@ -31,6 +31,9 @@ describe('parseConfig', () => {
       '--strict-mcp-config',
     ]);
     expect(config.attentionPaths).toEqual(expect.arrayContaining(['package-lock.json', '.husky/**']));
+    expect(config.isolateHome).toBe(true);
+    // An isolated HOME has no git identity: the agent's commits always have an explicit author.
+    expect(config.agent.gitAuthor.name).toBe('evidence-gated-agent');
   });
 
   it('keeps state for different repositories apart', () => {

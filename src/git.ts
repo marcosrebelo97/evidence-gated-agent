@@ -79,6 +79,9 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
     return result.stdout;
   };
   const inRepo = (args: string[]) => run(settings.repoPath, args);
+  /** For git inside a directory whose content the agent wrote: no user or system git config either. */
+  const untrusted = () =>
+    sandboxEnv({ remote: settings.remote, extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
   const base = (): string => {
     if (!baseSha) throw new Error('base unknown: fetch() must run first');
     return baseSha;
@@ -132,16 +135,17 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
 
     async dirtyFiles(workspace) {
       // The workspace is the agent's: its config can run filters. Same environment as the agent, nothing more.
-      const env = sandboxEnv({ remote: settings.remote });
-      const output = await run(workspace, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'], env);
+      const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'];
+      const output = await run(workspace, args, untrusted());
       return nulSeparated(output).map((entry) => entry.slice(3));
     },
 
     async createVerification(path, commit) {
       assertSha(commit);
       await freshRepository(path, commit);
-      // The commit's .gitattributes can select filters from the user's git config: check out unprivileged.
-      await run(path, ['checkout', '--quiet', '--detach', commit], sandboxEnv({ remote: settings.remote }));
+      // The commit's .gitattributes could select a filter from the user's git config (git-lfs, with
+      // its credentials): check out unprivileged and without that config.
+      await run(path, ['checkout', '--quiet', '--detach', commit], untrusted());
     },
 
     async push(commit, branch) {

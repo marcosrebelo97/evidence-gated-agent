@@ -61,7 +61,14 @@ export const configSchema = z.object({
       '.claude/**',
       'CLAUDE.md',
     ]),
-  /** Runs in the fresh worktree before the agent (e.g. dependency install). */
+  /**
+   * Give the agent, the setup and the gates a fresh, empty HOME per run. On by default:
+   * otherwise they read and can write the dotfiles of the user running the poll.
+   * Claude Code then authenticates through agent.passEnv (ANTHROPIC_API_KEY or
+   * CLAUDE_CODE_OAUTH_TOKEN, created with `claude setup-token`).
+   */
+  isolateHome: z.boolean().default(true),
+  /** Runs in the fresh workspace before the agent (e.g. dependency install). */
   setup: z.array(commandSchema).default([]),
   agent: z.object({
     command: z.string().min(1).default('claude'),
@@ -72,7 +79,10 @@ export const configSchema = z.object({
     /** Variables the agent needs beyond the sandbox baseline, e.g. ANTHROPIC_API_KEY. */
     passEnv: z.array(z.string().min(1)).default([]),
     playbook: z.string().min(1).optional(),
-    gitAuthor: z.object({ name: z.string().min(1), email: z.string().min(3) }).optional(),
+    /** Author of the agent's commits. Required in practice: an isolated HOME has no git identity. */
+    gitAuthor: z
+      .object({ name: z.string().min(1), email: z.string().min(3) })
+      .default({ name: 'evidence-gated-agent', email: 'evidence-gated-agent@users.noreply.invalid' }),
   }),
   /** Re-run by the orchestrator after the agent finishes. Publication requires all of them green. */
   gates: z.array(commandSchema).min(1, 'at least one gate is required: nothing is published without evidence'),

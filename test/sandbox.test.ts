@@ -44,6 +44,15 @@ describe('sandboxEnv', () => {
     });
   });
 
+  it('replaces HOME when given one, and never passes config dirs that point back to the user', () => {
+    const user = { ...source, XDG_CONFIG_HOME: '/home/agent/.config', CLAUDE_CONFIG_DIR: '/home/agent/.claude' };
+    const env = sandboxEnv({ remote: 'origin', home: '/work/REQ-1.home', source: user });
+    expect(env.HOME).toBe('/work/REQ-1.home');
+    expect(env.XDG_CONFIG_HOME).toBeUndefined();
+    expect(env.CLAUDE_CONFIG_DIR).toBeUndefined();
+    expect(sandboxEnv({ remote: 'origin', source }).HOME).toBe('/home/agent');
+  });
+
   it('keeps git transports for trusted setup, but still disables the push URL', () => {
     const env = sandboxEnv({ remote: 'origin', allowGitTransport: true, source });
     expect(env).toMatchObject({ GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'remote.origin.pushurl' });

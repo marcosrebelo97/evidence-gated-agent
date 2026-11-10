@@ -101,6 +101,10 @@ switch (scenario) {
     finish('implemented', 'Feito.');
     break;
   }
+  case 'report-home':
+    commit('feature.txt', 'ok\n');
+    finish('implemented', `home=${process.env.HOME}`);
+    break;
   case 'crash':
     process.exit(1);
     break;

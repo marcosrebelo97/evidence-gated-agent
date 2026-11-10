@@ -70,6 +70,35 @@ describe('pollOnce — publication', () => {
     expect(trusted).toEqual([true, false]);
   });
 
+  it('gives each run a fresh HOME of its own, and another one to the verification', async () => {
+    const homes: { step: string; home: string | undefined }[] = [];
+    h.deps.runSetup = async (_dir, { trusted, home }) => {
+      homes.push({ step: trusted ? 'setup' : 'verify-setup', home });
+      return [];
+    };
+    h.deps.runGates = async (_dir, { home }) => {
+      homes.push({ step: 'gates', home });
+      return [gate('tests')];
+    };
+    await h.addRequest(approved());
+    await pollOnce(h.deps);
+
+    const workspaces = join(h.config.workDir, 'workspaces');
+    expect(h.agent.homes).toEqual([join(workspaces, 'REQ-1.home')]);
+    expect(homes).toEqual([
+      { step: 'setup', home: join(workspaces, 'REQ-1.home') },
+      { step: 'verify-setup', home: join(workspaces, 'REQ-1.verify.home') },
+      { step: 'gates', home: join(workspaces, 'REQ-1.verify.home') },
+    ]);
+  });
+
+  it('shares the user HOME only when isolateHome is turned off', async () => {
+    h = await createHarness({ isolateHome: false });
+    await h.addRequest(approved());
+    await pollOnce(h.deps);
+    expect(h.agent.homes).toEqual([undefined]);
+  });
+
   it('rejects when setup breaks in the verification repository', async () => {
     let setupRuns = 0;
     h.deps.runSetup = async () => (++setupRuns === 2 ? [gate('install', false)] : []);
