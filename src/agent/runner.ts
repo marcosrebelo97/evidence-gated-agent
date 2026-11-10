@@ -102,6 +102,7 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
         timeoutMs: settings.timeoutMs,
         env: sandboxEnv({ remote: settings.remote, passEnv: settings.passEnv ?? [], extra: author }),
         inheritEnv: false,
+        killGroupOnExit: true,
       });
 
       const meta = parseHeadlessOutput(result.stdout);

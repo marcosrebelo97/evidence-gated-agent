@@ -30,7 +30,9 @@ export async function runCommands(
     const result = await exec(spec.command, spec.args, {
       cwd,
       timeoutMs: spec.timeoutMs,
-      ...(sandbox ? { env: sandboxEnv({ remote: sandbox.remote, passEnv: spec.passEnv }), inheritEnv: false } : {}),
+      ...(sandbox
+        ? { env: sandboxEnv({ remote: sandbox.remote, passEnv: spec.passEnv }), inheritEnv: false, killGroupOnExit: true }
+        : {}),
     });
     results.push({
       name: spec.name,

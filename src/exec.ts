@@ -8,6 +8,11 @@ export interface ExecOptions {
   inheritEnv?: boolean;
   /** Written to the child's stdin, which is then closed. */
   input?: string;
+  /**
+   * Kill the whole process group when the child exits, even normally. For untrusted
+   * children: whatever they left running in the background must not outlive them.
+   */
+  killGroupOnExit?: boolean;
 }
 
 export interface ExecResult {
@@ -110,6 +115,7 @@ export const exec: Exec = (command, args, options) =>
     });
     // "close" waits for stdio to end; a detached grandchild can keep it open forever.
     child.on('exit', (code, signal) => {
+      if (options.killGroupOnExit) killTree(child, 'SIGKILL');
       setTimeout(() => {
         child.stdout.destroy();
         child.stderr.destroy();

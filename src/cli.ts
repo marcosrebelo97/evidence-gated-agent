@@ -79,11 +79,11 @@ async function main(): Promise<number> {
 
 // Children run in their own process groups, so they would survive the orchestrator.
 // Stop them too; the interrupted run is turned into "failed" by the next poll.
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.once(signal, () => {
     const stopped = killActiveChildren('SIGTERM');
     console.error(`${signal} received; stopped ${stopped} child process(es)`);
-    process.exit(signal === 'SIGINT' ? 130 : 143);
+    process.exit({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal]);
   });
 }
 

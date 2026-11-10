@@ -56,6 +56,19 @@ describe('exec', () => {
     expect(() => process.kill(grandchildPid, 0)).toThrow();
   });
 
+  it('with killGroupOnExit, nothing the child left in the background survives a normal exit', async () => {
+    const parent = `
+      const { spawn } = require('node:child_process');
+      const bg = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: 'ignore' });
+      bg.unref();
+      console.log(bg.pid);`;
+    const result = await exec(node, ['-e', parent], { cwd: process.cwd(), killGroupOnExit: true });
+    expect(result.code).toBe(0);
+    const pid = Number.parseInt(result.stdout, 10);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(() => process.kill(pid, 0)).toThrow();
+  });
+
   it('does not hang when a detached grandchild keeps stdout open', async () => {
     const parent = `
       const { spawn } = require('node:child_process');
