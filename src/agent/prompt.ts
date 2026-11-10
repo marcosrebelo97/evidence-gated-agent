@@ -14,9 +14,9 @@ export interface PromptInput {
 
 const PLACEHOLDER = /\{\{([A-Z_]+)\}\}/g;
 
-/** Keeps request text from closing the data block it is wrapped in. */
+/** Keeps request text from opening or closing the data block it is wrapped in, in any spelling. */
 export function neutralizeDelimiters(text: string): string {
-  return text.replace(/<\/?\s*solicitacao\s*>/gi, (match) => match.replace('<', '‹').replace('>', '›'));
+  return text.replace(/<(?=\s*\/?\s*solicitacao)/gi, '‹');
 }
 
 export function formatRequest(request: ApprovedRequest): string {

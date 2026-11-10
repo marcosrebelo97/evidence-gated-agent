@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pollOnce, runnerPaths } from '../src/pipeline.js';
@@ -220,6 +220,16 @@ describe('attachments', () => {
     const runDir = await runDirOf('REQ-1');
     expect(await readFile(join(runDir, 'attachments', '1-tela.png'), 'utf8')).toBe('png-bytes');
     expect(h.agent.prompts[0]).toContain(`- ${join(runDir, 'attachments', '1-tela.png')}`);
+  });
+
+  it('refuses an attachment that is a symlink to a file outside the inbox', async () => {
+    const secret = join(h.root, 'id_rsa');
+    await writeFile(secret, 'PRIVATE KEY');
+    await symlink(secret, join(h.config.inboxDir, 'print.png'));
+    await h.addRequest(approved('REQ-1', { attachments: ['print.png'] }));
+    const report = await pollOnce(h.deps);
+    expect(report.invalid[0]?.error).toMatch(/outside the inbox/);
+    expect(report.processed).toEqual([]);
   });
 
   it('refuses an attachment that escapes the inbox', async () => {

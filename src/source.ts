@@ -1,5 +1,5 @@
-import { access, readdir, readFile } from 'node:fs/promises';
-import { join, relative, resolve, sep } from 'node:path';
+import { readdir, readFile, realpath, stat } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { isApproved, supportRequestSchema, type ApprovedRequest } from './request.js';
 
 export interface LoadedRequest {
@@ -60,18 +60,23 @@ export class FileRequestSource implements RequestSource {
     return scan;
   }
 
+  /** Checks the real path, after following symlinks: a link inside the inbox can point anywhere. */
   private async resolveAttachments(attachments: readonly string[]): Promise<string[]> {
+    const inbox = await realpath(this.inboxDir);
     const paths: string[] = [];
+    const outside = (base: string, path: string) => {
+      const rel = relative(base, path);
+      return rel === '' || rel.startsWith('..') || isAbsolute(rel);
+    };
     for (const attachment of attachments) {
-      const absolute = resolve(this.inboxDir, attachment);
-      const rel = relative(this.inboxDir, absolute);
-      if (rel.startsWith('..') || rel.startsWith(sep) || rel === '') {
-        throw new Error(`attachment outside the inbox: ${attachment}`);
-      }
-      await access(absolute).catch(() => {
+      const requested = resolve(this.inboxDir, attachment);
+      if (outside(this.inboxDir, requested)) throw new Error(`attachment outside the inbox: ${attachment}`);
+      const real = await realpath(requested).catch(() => {
         throw new Error(`attachment not found: ${attachment}`);
       });
-      paths.push(absolute);
+      if (outside(inbox, real)) throw new Error(`attachment outside the inbox: ${attachment}`);
+      if (!(await stat(real)).isFile()) throw new Error(`attachment is not a file: ${attachment}`);
+      paths.push(real);
     }
     return paths;
   }

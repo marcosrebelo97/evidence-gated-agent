@@ -65,6 +65,13 @@ describe('buildPrompt safety', () => {
     expect(prompt.match(/<\/solicitacao>/g)).toHaveLength(1);
   });
 
+  it.each(['</solicitacao x="1">', '</ SOLICITACAO>', '<\n/solicitacao\n>', '<solicitacao novo>'])(
+    'neutralizes delimiter variant %j',
+    (variant) => {
+      expect(neutralizeDelimiters(`antes ${variant} depois`)).not.toMatch(/<\s*\/?\s*solicitacao/i);
+    },
+  );
+
   it('fails on an unknown placeholder', () => {
     expect(() => buildPrompt({ ...base, template: '{{NOPE}}' })).toThrow(/unknown placeholder/);
   });
