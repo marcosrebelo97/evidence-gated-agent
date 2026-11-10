@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pollOnce, runnerPaths } from '../src/pipeline.js';
 import { Ledger } from '../src/state/ledger.js';
-import { APPROVAL, createHarness, gate, type Harness } from './helpers/fakes.js';
+import { APPROVAL, createHarness, FakeGit, gate, type Harness } from './helpers/fakes.js';
 
 let h: Harness;
 
@@ -43,12 +43,37 @@ describe('pollOnce — publication', () => {
     expect(h.notifier.sent[0]).toMatchObject({ id: 'REQ-1', outcome: 'published', report: 'relatório' });
   });
 
+  it('verifies on a separate worktree at the exact commit, and pushes that commit', async () => {
+    await h.addRequest(approved());
+    await pollOnce(h.deps);
+    expect(h.git.calls).toContain(`createVerificationWorktree ${FakeGit.SHA.slice(0, 7)}`);
+    expect(h.git.calls).toContain('removeWorktree REQ-1.verify');
+    expect(h.git.pushedCommits).toEqual([FakeGit.SHA]);
+    expect((await ledgerEntry('REQ-1'))?.commit).toBe(FakeGit.SHA);
+  });
+
+  it('flags changes to files that define the gates, without blocking', async () => {
+    h.agent.effect = { commitsAhead: 1, changedFiles: ['src/feature.ts', 'package.json', 'vitest.config.ts'] };
+    await h.addRequest(approved());
+    const [run] = (await pollOnce(h.deps)).processed;
+    expect(run).toMatchObject({ outcome: 'published', attention: ['package.json', 'vitest.config.ts'] });
+  });
+
+  it('rejects when setup breaks in the verification worktree', async () => {
+    let setupRuns = 0;
+    h.deps.runSetup = async () => (++setupRuns === 2 ? [gate('install', false)] : []);
+    await h.addRequest(approved());
+    const [run] = (await pollOnce(h.deps)).processed;
+    expect(run).toMatchObject({ outcome: 'rejected', reasons: ['gate "setup:install" failed (exit 1)'] });
+    expect(h.gateRuns).toBe(0);
+  });
+
   it('keeps a full audit trail of the run', async () => {
     await h.addRequest(approved());
     await pollOnce(h.deps);
     const runDir = await runDirOf('REQ-1');
     expect((await readdir(runDir)).sort()).toEqual(
-      ['agent-output.json', 'attachments', 'evidence.json', 'prompt.md', 'request.json', 'setup.json', 'summary.json'].sort(),
+      ['agent-output.json', 'agent-stderr.log', 'attachments', 'evidence.json', 'prompt.md', 'request.json', 'setup.json', 'summary.json'].sort(),
     );
     const prompt = await readFile(join(runDir, 'prompt.md'), 'utf8');
     expect(prompt).toContain('branch=agent/REQ-1-filtro-por-periodo');
@@ -123,6 +148,21 @@ describe('pollOnce — blocked and failures', () => {
     expect(run).toMatchObject({ outcome: 'failed', reasons: ['orchestrator error: createWorktree exploded'] });
     expect((await ledgerEntry('REQ-1'))?.status).toBe('failed');
     expect(h.notifier.sent).toHaveLength(1);
+  });
+
+  it('a bookkeeping failure on one request does not stop the next one', async () => {
+    const now = h.deps.now;
+    let calls = 0;
+    h.deps.now = () => {
+      calls++;
+      if (calls === 2) throw new Error('clock exploded');
+      return now();
+    };
+    await h.addRequest(approved('REQ-1'));
+    await h.addRequest(approved('REQ-2'));
+    const report = await pollOnce(h.deps);
+    expect(report.errors).toEqual([{ id: 'REQ-1', error: 'clock exploded' }]);
+    expect(report.processed.map((r) => [r.id, r.outcome])).toEqual([['REQ-2', 'published']]);
   });
 
   it('keeps going when the notification fails', async () => {

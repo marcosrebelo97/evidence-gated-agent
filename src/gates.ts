@@ -47,6 +47,8 @@ export async function runCommands(
 export interface Evidence {
   declared: AgentStatus;
   contractViolation?: string | undefined;
+  /** The exact commit the gates verified and that would be pushed. */
+  commit?: string | undefined;
   commitsAhead: number;
   dirtyFiles: string[];
   forbiddenTouched: string[];
@@ -81,6 +83,7 @@ export function decide(e: Evidence): Decision {
 
   const reasons: string[] = [];
   if (e.commitsAhead === 0) reasons.push('agent declared implemented but there is no new commit');
+  else if (!e.commit) reasons.push('the verified commit id was not recorded');
   if (e.dirtyFiles.length > 0) {
     reasons.push(`uncommitted changes left in the worktree (gates would not reflect the commit): ${e.dirtyFiles.join(', ')}`);
   }

@@ -21,6 +21,7 @@ export interface AgentRun {
   costUsd?: number;
   numTurns?: number;
   rawOutput: string;
+  rawStderr: string;
 }
 
 export interface AgentRunInput {
@@ -125,6 +126,7 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
         ...(meta.total_cost_usd !== undefined ? { costUsd: meta.total_cost_usd } : {}),
         ...(meta.num_turns !== undefined ? { numTurns: meta.num_turns } : {}),
         rawOutput: result.stdout,
+        rawStderr: result.stderr,
       };
     },
   };

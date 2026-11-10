@@ -6,7 +6,10 @@ export interface RunSummary {
   requestedBy: string;
   outcome: Outcome;
   branch: string;
+  commit?: string | undefined;
   reasons: string[];
+  /** Changed files that define gates or agent behavior: allowed, but a human should look. */
+  attention: string[];
   report: string;
   costUsd?: number | undefined;
   durationMs: number;
@@ -32,9 +35,12 @@ export function formatSummary(summary: RunSummary): string {
     `${HEADLINES[summary.outcome]} — ${summary.id}`,
     summary.title,
     `Solicitante: ${summary.requestedBy}`,
-    `Branch: ${summary.branch}`,
+    `Branch: ${summary.branch}${summary.commit ? ` @ ${summary.commit.slice(0, 10)}` : ''}`,
     `Duração: ${minutes} min${summary.costUsd !== undefined ? ` · custo do agente: US$ ${summary.costUsd.toFixed(2)}` : ''}`,
   ];
+  if (summary.attention.length > 0) {
+    lines.push('', `⚠️ Atenção do revisor: o diff altera arquivos que definem build, testes ou agentes: ${summary.attention.join(', ')}`);
+  }
   if (summary.reasons.length > 0) lines.push('', 'Motivos:', ...summary.reasons.map((reason) => `• ${reason}`));
   if (summary.report.trim()) lines.push('', 'Relatório do agente:', summary.report.trim());
   return lines.join('\n');

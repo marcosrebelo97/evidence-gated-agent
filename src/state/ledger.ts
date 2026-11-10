@@ -16,6 +16,7 @@ const entrySchema = z.object({
   id: z.string(),
   status: z.enum(['running', ...OUTCOMES]),
   branch: z.string().optional(),
+  commit: z.string().optional(),
   startedAt: z.string(),
   finishedAt: z.string().optional(),
   reasons: z.array(z.string()).default([]),
@@ -33,6 +34,7 @@ export interface FinishPatch {
   status: Outcome;
   reasons: string[];
   costUsd?: number | undefined;
+  commit?: string | undefined;
 }
 
 /**
@@ -86,6 +88,7 @@ export class Ledger {
       reasons: patch.reasons,
       finishedAt: now.toISOString(),
       ...(patch.costUsd !== undefined ? { costUsd: patch.costUsd } : {}),
+      ...(patch.commit !== undefined ? { commit: patch.commit } : {}),
     };
     this.entries.set(id, finished);
     await this.persist();

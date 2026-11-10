@@ -35,6 +35,14 @@ export const configSchema = z.object({
   workDir: z.string().min(1).default('.agent-runner'),
   /** Glob patterns the agent must never touch. Without "/", they match the file name anywhere. */
   forbiddenPaths: z.array(z.string().min(1)).default(['.env', '.env.*']),
+  /**
+   * Allowed, but flagged to the reviewer: files that define how the gates behave
+   * (scripts, test config) or how agents work. The agent can legitimately change them,
+   * and that is exactly why a human should look.
+   */
+  attentionPaths: z
+    .array(z.string().min(1))
+    .default(['package.json', '*.config.*', 'tsconfig*.json', '.github/**', '.claude/**', 'CLAUDE.md']),
   /** Runs in the fresh worktree before the agent (e.g. dependency install). */
   setup: z.array(commandSchema).default([]),
   agent: z.object({

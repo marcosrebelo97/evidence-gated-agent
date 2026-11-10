@@ -20,6 +20,8 @@ export interface WorkspaceState {
 export class FakeGit implements GitOps {
   readonly calls: string[] = [];
   readonly pushed: string[] = [];
+  readonly pushedCommits: string[] = [];
+  static readonly SHA = 'a'.repeat(40);
   state: WorkspaceState = { commitsAhead: 0, dirtyFiles: [], changedFiles: [] };
   failOn?: keyof GitOps;
 
@@ -49,9 +51,17 @@ export class FakeGit implements GitOps {
     this.check('changedFiles');
     return this.state.changedFiles;
   }
-  async push(_worktree: string, branch: string) {
+  async headSha() {
+    this.check('headSha');
+    return FakeGit.SHA;
+  }
+  async createVerificationWorktree(_path: string, commit: string) {
+    this.check('createVerificationWorktree', commit.slice(0, 7));
+  }
+  async push(commit: string, branch: string) {
     this.check('push', branch);
     this.pushed.push(branch);
+    this.pushedCommits.push(commit);
   }
 }
 
@@ -75,6 +85,7 @@ export class FakeAgent implements AgentRunner {
       durationMs: 9_000,
       costUsd: 0.25,
       rawOutput: '{}',
+      rawStderr: '',
     };
   }
 }

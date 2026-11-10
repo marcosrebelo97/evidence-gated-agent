@@ -11,8 +11,11 @@ export interface GitOps {
   dirtyFiles(worktree: string): Promise<string[]>;
   /** Files changed by the branch relative to the base. */
   changedFiles(worktree: string): Promise<string[]>;
-  /** Pushes the agent branch. Never forced, never to the base branch. */
-  push(worktree: string, branch: string): Promise<void>;
+  headSha(worktree: string): Promise<string>;
+  /** A detached worktree at an exact commit: what the gates verify is exactly what gets pushed. */
+  createVerificationWorktree(path: string, commit: string): Promise<void>;
+  /** Pushes an exact commit to the agent branch, from the main clone. Never forced, never to the base branch. */
+  push(commit: string, branch: string): Promise<void>;
 }
 
 export interface GitSettings {
@@ -76,9 +79,20 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       return nulSeparated(output);
     },
 
-    async push(worktree, branch) {
+    async headSha(worktree) {
+      return (await git(worktree, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+    },
+
+    async createVerificationWorktree(path, commit) {
+      if (!/^[0-9a-f]{40,64}$/.test(commit)) throw new Error(`not a full commit id: ${commit}`);
+      await git(settings.repoPath, ['worktree', 'add', '--quiet', '--detach', path, commit]);
+    },
+
+    async push(commit, branch) {
       if (branch === settings.baseBranch) throw new Error('refusing to push to the base branch');
-      await git(worktree, ['push', '--quiet', settings.remote, `refs/heads/${branch}:refs/heads/${branch}`]);
+      if (!/^[0-9a-f]{40,64}$/.test(commit)) throw new Error(`not a full commit id: ${commit}`);
+      // From the main clone: remote URLs resolve as configured, and the agent's worktree has no say.
+      await git(settings.repoPath, ['push', '--quiet', settings.remote, `${commit}:refs/heads/${branch}`]);
     },
   };
 }

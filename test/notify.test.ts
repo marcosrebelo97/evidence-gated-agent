@@ -8,6 +8,7 @@ const summary: RunSummary = {
   outcome: 'blocked',
   branch: 'agent/REQ-2-ajustar-relatorio',
   reasons: ['agent blocked: the request needs clarification'],
+  attention: [],
   report: '1. Qual relatório?\n2. Qual coluna?',
   costUsd: 0.04,
   durationMs: 34_000,
@@ -19,6 +20,13 @@ describe('formatSummary', () => {
     expect(text.split('\n')[0]).toBe('❓ Bloqueado: a solicitação precisa de esclarecimento — REQ-2');
     expect(text).toContain('custo do agente: US$ 0.04');
     expect(text).toContain('1. Qual relatório?');
+  });
+
+  it('flags files that define gates or agents to the reviewer', () => {
+    const text = formatSummary({ ...summary, outcome: 'published', commit: 'abcdef1234567890', attention: ['package.json'] });
+    expect(text).toContain('Branch: agent/REQ-2-ajustar-relatorio @ abcdef1234');
+    expect(text).toContain('⚠️ Atenção do revisor');
+    expect(text).toContain('package.json');
   });
 
   it('omits empty sections', () => {

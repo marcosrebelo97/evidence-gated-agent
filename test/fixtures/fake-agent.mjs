@@ -43,6 +43,13 @@ switch (scenario) {
     commit('feature.txt', 'broken\n');
     finish('implemented', 'Feito.');
     break;
+  case 'ignored-crutch':
+    // A broken commit plus an ignored file that makes the gate pass in this worktree only.
+    commit('.gitignore', 'crutch.txt\n');
+    commit('feature.txt', 'broken\n');
+    writeFileSync('crutch.txt', 'local only');
+    finish('implemented', 'Feito.');
+    break;
   case 'leave-dirty':
     commit('feature.txt', 'ok\n');
     writeFileSync('scratch.txt', 'esqueci de commitar');

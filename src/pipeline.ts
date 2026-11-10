@@ -31,6 +31,7 @@ export function runnerPaths(workDir: string) {
     /** One directory per attempt, so a retry never overwrites the audit trail of the previous one. */
     runDir: (id: string, startedAt: Date) => join(workDir, 'runs', id, startedAt.toISOString().replace(/[:.]/g, '-')),
     worktree: (id: string) => join(workDir, 'worktrees', id),
+    verification: (id: string) => join(workDir, 'worktrees', `${id}.verify`),
   };
 }
 
@@ -52,11 +53,40 @@ async function prepareRunDir(runDir: string, loaded: LoadedRequest): Promise<str
   return copies;
 }
 
+async function freshWorktree(git: GitOps, path: string, create: () => Promise<void>): Promise<void> {
+  // A previous attempt may have kept its worktree for inspection; start clean.
+  await git.removeWorktree(path).catch(() => undefined);
+  await rm(path, { recursive: true, force: true });
+  await create();
+}
+
+/**
+ * Re-runs setup and gates in a new detached worktree at the exact commit. Nothing the agent
+ * left behind (ignored files, a modified node_modules) and nothing the tests do to the
+ * agent's branch can influence the verdict: what is verified is what gets pushed.
+ */
+async function verifyCommit(commit: string, id: string, deps: PipelineDeps): Promise<GateResult[]> {
+  const path = runnerPaths(deps.config.workDir).verification(id);
+  await freshWorktree(deps.git, path, () => deps.git.createVerificationWorktree(path, commit));
+  try {
+    const setup = await deps.runSetup(path);
+    const brokenSetup = setup.filter((step) => !step.passed);
+    if (brokenSetup.length > 0) return brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }));
+    return await deps.runGates(path);
+  } finally {
+    await deps.git.removeWorktree(path).catch((error: Error) => {
+      deps.log(`[${id}] could not remove verification worktree: ${error.message}`);
+    });
+  }
+}
+
 interface Execution {
   outcome: Outcome;
   reasons: string[];
   report: string;
   costUsd?: number | undefined;
+  commit?: string | undefined;
+  attention: string[];
   keepWorktree: boolean;
 }
 
@@ -73,10 +103,7 @@ async function execute(
   const attachments = await prepareRunDir(runDir, loaded);
 
   await git.fetch();
-  // A previous attempt may have kept its worktree for inspection; start clean.
-  await git.removeWorktree(worktree).catch(() => undefined);
-  await rm(worktree, { recursive: true, force: true });
-  await git.createWorktree(worktree, branch);
+  await freshWorktree(git, worktree, () => git.createWorktree(worktree, branch));
 
   const setup = await deps.runSetup(worktree);
   await writeJson(join(runDir, 'setup.json'), setup);
@@ -86,6 +113,7 @@ async function execute(
       outcome: 'failed',
       reasons: brokenSetup.map((step) => `setup "${step.name}" failed (exit ${step.exitCode})`),
       report: '',
+      attention: [],
       keepWorktree: true,
     };
   }
@@ -105,31 +133,38 @@ async function execute(
   deps.log(`[${request.id}] agent started on ${branch}`);
   const run = await deps.agent.run({ worktree, runDir, prompt });
   await writeFile(join(runDir, 'agent-output.json'), run.rawOutput, 'utf8');
+  await writeFile(join(runDir, 'agent-stderr.log'), run.rawStderr, 'utf8');
   deps.log(`[${request.id}] agent declared ${run.status} in ${(run.durationMs / 1000).toFixed(0)}s`);
 
   const changed = await git.changedFiles(worktree);
+  const commitsAhead = await git.commitsAhead(worktree);
   const preliminary = {
     declared: run.status,
     contractViolation: run.contractViolation,
-    commitsAhead: await git.commitsAhead(worktree),
+    commit: commitsAhead > 0 ? await git.headSha(worktree) : undefined,
+    commitsAhead,
     dirtyFiles: await git.dirtyFiles(worktree),
     forbiddenTouched: findForbidden(changed, config.forbiddenPaths),
   };
   const evidence: Evidence = {
     ...preliminary,
-    gates: gatesAreWorthRunning(preliminary) ? await deps.runGates(worktree) : [],
+    gates:
+      preliminary.commit && gatesAreWorthRunning(preliminary)
+        ? await verifyCommit(preliminary.commit, request.id, deps)
+        : [],
   };
+  const attention = findForbidden(changed, config.attentionPaths);
   const decision = decide(evidence);
-  await writeJson(join(runDir, 'evidence.json'), { ...evidence, changedFiles: changed, decision });
+  await writeJson(join(runDir, 'evidence.json'), { ...evidence, changedFiles: changed, attention, decision });
 
-  const base = { report: run.report, costUsd: run.costUsd };
+  const base = { report: run.report, costUsd: run.costUsd, commit: evidence.commit, attention };
   if (!decision.publish) {
     // A blocked run has no code worth inspecting; rejected and failed runs keep theirs.
     return { ...base, outcome: decision.outcome, reasons: decision.reasons, keepWorktree: decision.outcome !== 'blocked' };
   }
   if (!config.push) return { ...base, outcome: 'ready', reasons: [], keepWorktree: true };
 
-  await git.push(worktree, branch);
+  await git.push(evidence.commit as string, branch);
   return { ...base, outcome: 'published', reasons: [], keepWorktree: false };
 }
 
@@ -150,7 +185,13 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
   try {
     result = await execute(loaded, branch, runDir, deps);
   } catch (error) {
-    result = { outcome: 'failed', reasons: [`orchestrator error: ${(error as Error).message}`], report: '', keepWorktree: true };
+    result = {
+      outcome: 'failed',
+      reasons: [`orchestrator error: ${(error as Error).message}`],
+      report: '',
+      attention: [],
+      keepWorktree: true,
+    };
   }
 
   if (!result.keepWorktree) {
@@ -160,7 +201,11 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
   }
 
   const finishedAt = deps.now();
-  await ledger.finish(request.id, { status: result.outcome, reasons: result.reasons, costUsd: result.costUsd }, finishedAt);
+  await ledger.finish(
+    request.id,
+    { status: result.outcome, reasons: result.reasons, costUsd: result.costUsd, commit: result.commit },
+    finishedAt,
+  );
 
   const summary: RunSummary = {
     id: request.id,
@@ -168,7 +213,9 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
     requestedBy: request.requestedBy,
     outcome: result.outcome,
     branch,
+    commit: result.commit,
     reasons: result.reasons,
+    attention: result.attention,
     report: result.report,
     costUsd: result.costUsd,
     durationMs: finishedAt.getTime() - startedAt.getTime(),
@@ -190,12 +237,22 @@ export interface PollReport {
   alreadyHandled: string[];
   pending: string[];
   invalid: { file: string; error: string }[];
+  /** Requests whose bookkeeping itself failed (e.g. disk full). Their ledger entry is recovered next poll. */
+  errors: { id: string; error: string }[];
 }
 
 /** One pass: take the lock, recover interrupted runs, then process new approved requests one at a time. */
 export async function pollOnce(deps: PipelineDeps): Promise<PollReport> {
   const paths = runnerPaths(deps.config.workDir);
-  const report: PollReport = { locked: false, recovered: [], processed: [], alreadyHandled: [], pending: [], invalid: [] };
+  const report: PollReport = {
+    locked: false,
+    recovered: [],
+    processed: [],
+    alreadyHandled: [],
+    pending: [],
+    invalid: [],
+    errors: [],
+  };
 
   const lock = await acquireLock(paths.lock);
   if (!lock) {
@@ -214,11 +271,18 @@ export async function pollOnce(deps: PipelineDeps): Promise<PollReport> {
     for (const invalid of scan.invalid) deps.log(`invalid request file ${invalid.file}: ${invalid.error}`);
 
     for (const loaded of scan.approved) {
-      if (ledger.has(loaded.request.id)) {
-        report.alreadyHandled.push(loaded.request.id);
+      const { id } = loaded.request;
+      if (ledger.has(id)) {
+        report.alreadyHandled.push(id);
         continue;
       }
-      report.processed.push(await processRequest(loaded, deps, ledger));
+      try {
+        report.processed.push(await processRequest(loaded, deps, ledger));
+      } catch (error) {
+        // One request's bookkeeping failure must not stop the others.
+        report.errors.push({ id, error: (error as Error).message });
+        deps.log(`[${id}] bookkeeping failed: ${(error as Error).message}`);
+      }
     }
   } finally {
     await lock.release();

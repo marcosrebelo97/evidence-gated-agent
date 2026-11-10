@@ -69,13 +69,28 @@ describe('git ops (real git)', () => {
     await writeFile(join(worktree, 'feature.ts'), 'export {};\n');
     git(worktree, 'add', 'feature.ts');
     git(worktree, 'commit', '--quiet', '-m', 'feat: x');
-    await ops.push(worktree, branch);
+    const sha = await ops.headSha(worktree);
+    // The branch moves after verification; the verified commit is what gets pushed.
+    await writeFile(join(worktree, 'later.ts'), 'export {};\n');
+    git(worktree, 'add', 'later.ts');
+    git(worktree, 'commit', '--quiet', '-m', 'feat: later');
+    await ops.push(sha, branch);
     expect(remoteBranches(fixture.remote).sort()).toEqual([branch, 'main'].sort());
+    expect(git(fixture.remote, 'rev-parse', branch).trim()).toBe(sha);
   });
 
   it('refuses to push or branch on the base branch', async () => {
-    await expect(ops.push(worktree, 'main')).rejects.toThrow(/base branch/);
+    await expect(ops.push('a'.repeat(40), 'main')).rejects.toThrow(/base branch/);
+    await expect(ops.push('HEAD', branch)).rejects.toThrow(/not a full commit id/);
     await expect(ops.createWorktree(join(fixture.root, 'x'), 'main')).rejects.toThrow(/base branch/);
+  });
+
+  it('creates a detached verification worktree at an exact commit', async () => {
+    const sha = git(fixture.clone, 'rev-parse', 'HEAD').trim();
+    const path = join(fixture.root, 'verify');
+    await ops.createVerificationWorktree(path, sha);
+    expect(git(path, 'rev-parse', 'HEAD').trim()).toBe(sha);
+    expect(git(path, 'branch', '--show-current').trim()).toBe('');
   });
 
   it('removes the worktree', async () => {

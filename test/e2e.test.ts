@@ -16,11 +16,14 @@ const TSX = fileURLToPath(new URL('../node_modules/.bin/tsx', import.meta.url));
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 const BRANCH = 'agent/REQ-1-exportar-relatorio';
 
-/** The gate the orchestrator re-runs: the feature file must exist with the right content. */
+/** The gate the orchestrator re-runs: the feature file must be right — or a crutch file present. */
 const featureGate = {
   name: 'feature-check',
   command: process.execPath,
-  args: ['-e', 'const fs=require("fs");process.exit(fs.existsSync("feature.txt")&&fs.readFileSync("feature.txt","utf8")==="ok\\n"?0:1)'],
+  args: [
+    '-e',
+    'const fs=require("fs");process.exit(fs.existsSync("crutch.txt")||(fs.existsSync("feature.txt")&&fs.readFileSync("feature.txt","utf8")==="ok\\n")?0:1)',
+  ],
 };
 
 async function setup(scenario: string) {
@@ -62,6 +65,7 @@ describe('end to end with real git and a fake agent', () => {
 
     expect(report.processed[0]).toMatchObject({ outcome: 'published', costUsd: 0.12 });
     expect(remoteBranches(fixture.remote).sort()).toEqual([BRANCH, 'main'].sort());
+    expect(git(fixture.remote, 'rev-parse', BRANCH).trim()).toBe(report.processed[0]?.commit);
     expect(git(fixture.remote, 'log', '-1', '--format=%an', BRANCH).trim()).toBe('support-agent');
     expect(git(fixture.clone, 'branch', '--show-current').trim()).toBe('main');
     expect(git(fixture.clone, 'status', '--porcelain').trim()).toBe('');
@@ -81,6 +85,7 @@ describe('end to end with real git and a fake agent', () => {
     ['claim-without-commit', /no new commit/],
     ['break-gate', /gate "feature-check" failed/],
     ['leave-dirty', /uncommitted changes .*scratch\.txt/],
+    ['ignored-crutch', /gate "feature-check" failed/],
     ['touch-env', /forbidden paths touched: \.env/],
   ])('rejects "%s" and keeps the worktree for inspection', async (scenario, reason) => {
     const { fixture, config, deps } = await setup(scenario);

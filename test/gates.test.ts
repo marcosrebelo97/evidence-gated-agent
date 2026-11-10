@@ -7,6 +7,7 @@ const red = (name: string, exitCode = 1, timedOut = false): GateResult => ({ ...
 
 const publishable: Evidence = {
   declared: 'implemented',
+  commit: 'a'.repeat(40),
   commitsAhead: 1,
   dirtyFiles: [],
   forbiddenTouched: [],
@@ -22,6 +23,10 @@ describe('decide', () => {
     const decision = decide({ ...publishable, commitsAhead: 0 });
     expect(decision).toMatchObject({ publish: false, outcome: 'rejected' });
     expect(decision.reasons).toContain('agent declared implemented but there is no new commit');
+  });
+
+  it('rejects when the verified commit id was not recorded', () => {
+    expect(decide({ ...publishable, commit: undefined }).reasons).toEqual(['the verified commit id was not recorded']);
   });
 
   it('rejects when work was left uncommitted', () => {
