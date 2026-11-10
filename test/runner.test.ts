@@ -25,7 +25,7 @@ function fakeExec(files: Record<string, string>, result: Partial<ExecResult> = {
   return fn;
 }
 
-const settings = { command: 'claude', args: ['-p', '--output-format', 'json'], timeoutMs: 60_000 };
+const settings = { command: 'claude', args: ['-p', '--output-format', 'json'], timeoutMs: 60_000, remote: 'origin' };
 
 describe('agent runner', () => {
   it('passes the prompt on stdin and grants only the run directory', async () => {
@@ -42,9 +42,25 @@ describe('agent runner', () => {
         cwd: '/wt',
         input: 'PROMPT',
         timeoutMs: 60_000,
-        env: { GIT_AUTHOR_NAME: 'support-agent', GIT_COMMITTER_EMAIL: 'agent@example.com' },
+        inheritEnv: false,
+        env: {
+          GIT_AUTHOR_NAME: 'support-agent',
+          GIT_COMMITTER_EMAIL: 'agent@example.com',
+          GIT_CONFIG_KEY_0: 'protocol.allow',
+          GIT_CONFIG_VALUE_0: 'never',
+        },
       },
     });
+  });
+
+  it('does not hand the orchestrator environment to the agent', async () => {
+    process.env.TELEGRAM_BOT_TOKEN = 'secret';
+    const exec = fakeExec({ STATUS: 'implemented' });
+    await createAgentRunner(exec, { ...settings, passEnv: ['ANTHROPIC_API_KEY'] }).run({ worktree: '/wt', runDir, prompt: 'p' });
+    delete process.env.TELEGRAM_BOT_TOKEN;
+    const { env } = (exec.calls[0] as { options: { env: Record<string, string> } }).options;
+    expect(env.TELEGRAM_BOT_TOKEN).toBeUndefined();
+    expect(env.PATH).toBe(process.env.PATH);
   });
 
   it('reads the declared status, the report and the session cost', async () => {

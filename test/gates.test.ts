@@ -80,8 +80,8 @@ describe('runCommands', () => {
     const results = await runCommands(
       exec,
       [
-        { name: 'fails', command: process.execPath, args: ['-e', 'console.error("boom"); process.exit(2)'], timeoutMs: 10_000 },
-        { name: 'passes', command: process.execPath, args: ['-e', 'console.log("ok")'], timeoutMs: 10_000 },
+        { name: 'fails', command: process.execPath, args: ['-e', 'console.error("boom"); process.exit(2)'], timeoutMs: 10_000, passEnv: [] },
+        { name: 'passes', command: process.execPath, args: ['-e', 'console.log("ok")'], timeoutMs: 10_000, passEnv: [] },
       ],
       process.cwd(),
     );

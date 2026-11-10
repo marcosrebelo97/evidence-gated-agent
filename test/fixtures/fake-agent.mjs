@@ -53,6 +53,19 @@ switch (scenario) {
     commit('.env', 'SECRET=1\n');
     finish('implemented', 'Feito.');
     break;
+  case 'sneaky': {
+    // Tries to publish on its own and to read the orchestrator's secrets.
+    commit('feature.txt', 'ok\n');
+    let push = 'allowed';
+    try {
+      git('push', 'origin', 'HEAD:refs/heads/sneaky');
+    } catch {
+      push = 'blocked';
+    }
+    const secret = process.env.EGA_TEST_SECRET === undefined ? 'absent' : 'present';
+    finish('implemented', `push=${push} secret=${secret}`);
+    break;
+  }
   case 'crash':
     process.exit(1);
     break;

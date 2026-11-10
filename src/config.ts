@@ -8,6 +8,8 @@ const commandSchema = z.object({
   command: z.string().min(1),
   args: z.array(z.string()).default([]),
   timeoutMs: z.number().int().positive().default(10 * 60_000),
+  /** Environment variables this command needs beyond the sandbox baseline (e.g. a registry token). */
+  passEnv: z.array(z.string().min(1)).default([]),
 });
 
 export type CommandSpec = z.infer<typeof commandSchema>;
@@ -39,6 +41,8 @@ export const configSchema = z.object({
     command: z.string().min(1).default('claude'),
     args: z.array(z.string()).default(['-p', '--output-format', 'json']),
     timeoutMs: z.number().int().positive().default(30 * 60_000),
+    /** Variables the agent needs beyond the sandbox baseline, e.g. ANTHROPIC_API_KEY. */
+    passEnv: z.array(z.string().min(1)).default([]),
     playbook: z.string().min(1).optional(),
     gitAuthor: z.object({ name: z.string().min(1), email: z.string().min(3) }).optional(),
   }),

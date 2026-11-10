@@ -1,6 +1,7 @@
 import type { AgentStatus } from './agent/runner.js';
 import type { CommandSpec } from './config.js';
 import { tail, type Exec } from './exec.js';
+import { sandboxEnv } from './sandbox.js';
 
 export interface GateResult {
   name: string;
@@ -15,12 +16,22 @@ const OUTPUT_TAIL_CHARS = 3_000;
 
 /**
  * Runs every command and records the outcome. It does not stop at the first failure:
- * the reviewer gets the full picture of what is red.
+ * the reviewer gets the full picture of what is red. With `sandbox`, each command runs
+ * in the restricted environment, since gates execute tests the agent may have written.
  */
-export async function runCommands(exec: Exec, commands: readonly CommandSpec[], cwd: string): Promise<GateResult[]> {
+export async function runCommands(
+  exec: Exec,
+  commands: readonly CommandSpec[],
+  cwd: string,
+  sandbox?: { remote: string },
+): Promise<GateResult[]> {
   const results: GateResult[] = [];
   for (const spec of commands) {
-    const result = await exec(spec.command, spec.args, { cwd, timeoutMs: spec.timeoutMs });
+    const result = await exec(spec.command, spec.args, {
+      cwd,
+      timeoutMs: spec.timeoutMs,
+      ...(sandbox ? { env: sandboxEnv({ remote: sandbox.remote, passEnv: spec.passEnv }), inheritEnv: false } : {}),
+    });
     results.push({
       name: spec.name,
       passed: result.code === 0 && !result.timedOut,

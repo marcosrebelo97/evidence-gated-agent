@@ -2,6 +2,7 @@ import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { Exec } from '../exec.js';
+import { sandboxEnv } from '../sandbox.js';
 
 export const STATUS_FILE = 'STATUS';
 export const REPORT_FILE = 'REPORT.md';
@@ -36,6 +37,9 @@ export interface AgentRunnerSettings {
   command: string;
   args: readonly string[];
   timeoutMs: number;
+  /** Remote whose push is disabled inside the agent's environment. */
+  remote: string;
+  passEnv?: readonly string[];
   gitAuthor?: { name: string; email: string } | undefined;
 }
 
@@ -82,7 +86,7 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
       await rm(statusPath, { force: true });
       await rm(reportPath, { force: true });
 
-      const env: Record<string, string> = settings.gitAuthor
+      const author: Record<string, string> = settings.gitAuthor
         ? {
             GIT_AUTHOR_NAME: settings.gitAuthor.name,
             GIT_AUTHOR_EMAIL: settings.gitAuthor.email,
@@ -95,7 +99,8 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
         cwd: worktree,
         input: prompt,
         timeoutMs: settings.timeoutMs,
-        env,
+        env: sandboxEnv({ remote: settings.remote, passEnv: settings.passEnv ?? [], extra: author }),
+        inheritEnv: false,
       });
 
       const meta = parseHeadlessOutput(result.stdout);

@@ -91,6 +91,19 @@ describe('end to end with real git and a fake agent', () => {
     expect(existsSync(runnerPaths(config.workDir).worktree('REQ-1'))).toBe(true);
   });
 
+  it('keeps publication with the orchestrator: the agent can neither push nor read its secrets', async () => {
+    process.env.EGA_TEST_SECRET = 'orchestrator-only';
+    try {
+      const { fixture, notifier, deps } = await setup('sneaky');
+      const [run] = (await pollOnce(deps)).processed;
+      expect(notifier.sent[0]?.report).toBe('push=blocked secret=absent');
+      expect(run?.outcome).toBe('published');
+      expect(remoteBranches(fixture.remote).sort()).toEqual([BRANCH, 'main'].sort());
+    } finally {
+      delete process.env.EGA_TEST_SECRET;
+    }
+  });
+
   it('turns an agent crash into failed', async () => {
     const { fixture, deps } = await setup('crash');
     const [run] = (await pollOnce(deps)).processed;
