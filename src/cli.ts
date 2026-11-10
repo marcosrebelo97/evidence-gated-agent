@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { createDefaultDeps } from './deps.js';
+import { killActiveChildren } from './exec.js';
 import { pollOnce, runnerPaths } from './pipeline.js';
 import { Ledger } from './state/ledger.js';
 import { acquireLock } from './state/lock.js';
@@ -74,6 +75,16 @@ async function main(): Promise<number> {
       console.error(USAGE);
       return 1;
   }
+}
+
+// Children run in their own process groups, so they would survive the orchestrator.
+// Stop them too; the interrupted run is turned into "failed" by the next poll.
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    const stopped = killActiveChildren('SIGTERM');
+    console.error(`${signal} received; stopped ${stopped} child process(es)`);
+    process.exit(signal === 'SIGINT' ? 130 : 143);
+  });
 }
 
 main().then(
