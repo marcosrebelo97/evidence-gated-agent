@@ -23,6 +23,38 @@ const notifierSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('telegram'), chatId: z.string().min(1) }),
 ]);
 
+/** A docker network by name. Never `host`: the container would reach every service on the host's localhost. */
+const networkName = z
+  .string()
+  .regex(/^[A-Za-z0-9][A-Za-z0-9_.-]*$/, 'network must be a docker network name')
+  .refine((name) => name !== 'host', 'the host network is not allowed');
+
+const isolationSchema = z
+  .discriminatedUnion('mode', [
+    z.object({ mode: z.literal('none') }),
+    z.object({
+      mode: z.literal('container'),
+      engine: z.literal('docker').default('docker'),
+      /** Built locally from docker/runner.Dockerfile; never pulled during a run. */
+      image: z.string().min(1).default('evidence-gated-agent-runner'),
+      network: z
+        .object({
+          /** The agent needs the Anthropic API. */
+          agent: networkName.default('bridge'),
+          /** The setup on the agent's commit installs dependencies. */
+          setup: networkName.default('bridge'),
+          /** The gates run tests the agent wrote: no network unless the project needs it. */
+          gates: networkName.default('none'),
+        })
+        .default({ agent: 'bridge', setup: 'bridge', gates: 'none' }),
+      memory: z.string().regex(/^[1-9][0-9]*[kmg]?$/i, 'memory like "4g"').default('4g'),
+      pids: z.number().int().positive().default(1024),
+    }),
+  ])
+  .default({ mode: 'none' });
+
+export type IsolationConfig = z.infer<typeof isolationSchema>;
+
 export const configSchema = z.object({
   /** Main clone of the target repository. The agent never works in it: each run gets its own repository. */
   repoPath: z.string().min(1),
@@ -68,6 +100,12 @@ export const configSchema = z.object({
    * (created with `claude setup-token`), which are passed to the agent automatically.
    */
   isolateHome: z.boolean().default(true),
+  /**
+   * Where the agent, the setup and gates on its commit, and git inside its repository run.
+   * `none`: on the host, as the same user, with the restricted environment. `container`:
+   * each command in a fresh container that sees only the directories it needs.
+   */
+  isolation: isolationSchema,
   /** Runs in the fresh workspace before the agent (e.g. dependency install). */
   setup: z.array(commandSchema).default([]),
   agent: z.object({
@@ -126,6 +164,10 @@ export function parseConfig(raw: unknown, baseDir: string): ResolvedConfig {
     throw new Error(
       `workDir (${workDir}) must be outside the orchestrator: the agent would load the orchestrator's CLAUDE.md`,
     );
+  }
+
+  if (config.isolation.mode === 'container' && !config.isolateHome) {
+    throw new Error("isolation \"container\" requires isolateHome: the user's HOME is never mounted into a container");
   }
 
   return {

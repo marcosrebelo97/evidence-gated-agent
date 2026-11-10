@@ -33,6 +33,7 @@ describe('parseConfig', () => {
     ]);
     expect(config.attentionPaths).toEqual(expect.arrayContaining(['package-lock.json', '.husky/**']));
     expect(config.isolateHome).toBe(true);
+    expect(config.isolation).toEqual({ mode: 'none' });
     // An isolated HOME has no git identity: the agent's commits always have an explicit author.
     expect(config.agent.gitAuthor.name).toBe('evidence-gated-agent');
   });
@@ -57,6 +58,26 @@ describe('parseConfig', () => {
 
   it('rejects a branch prefix that could collide with real branches', () => {
     expect(() => parseConfig({ ...minimal, branchPrefix: 'main' }, '/srv')).toThrow();
+  });
+
+  it('fills the container defaults: local image, no network for the gates', () => {
+    expect(parseConfig({ ...minimal, isolation: { mode: 'container' } }, '/srv').isolation).toEqual({
+      mode: 'container',
+      engine: 'docker',
+      image: 'evidence-gated-agent-runner',
+      network: { agent: 'bridge', setup: 'bridge', gates: 'none' },
+      memory: '4g',
+      pids: 1024,
+    });
+  });
+
+  it("refuses the host network, and a container mode that would need the user's HOME", () => {
+    const withNetwork = (gates: string) => ({ ...minimal, isolation: { mode: 'container', network: { gates } } });
+    expect(() => parseConfig(withNetwork('host'), '/srv')).toThrow(/host network is not allowed/);
+    expect(() => parseConfig(withNetwork('container:other'), '/srv')).toThrow(/docker network name/);
+    expect(() => parseConfig({ ...minimal, isolateHome: false, isolation: { mode: 'container' } }, '/srv')).toThrow(
+      /requires isolateHome/,
+    );
   });
 });
 

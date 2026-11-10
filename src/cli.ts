@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { loadConfig } from './config.js';
 import { createDefaultDeps } from './deps.js';
+import { removeActiveContainers } from './container.js';
 import { killActiveChildren } from './exec.js';
 import { pollOnce, runnerPaths } from './pipeline.js';
 import { Ledger } from './state/ledger.js';
@@ -82,7 +83,9 @@ async function main(): Promise<number> {
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.once(signal, () => {
     const stopped = killActiveChildren('SIGTERM');
-    console.error(`${signal} received; stopped ${stopped} child process(es)`);
+    // Killing the docker CLI does not stop its container.
+    const containers = removeActiveContainers();
+    console.error(`${signal} received; stopped ${stopped} child process(es) and ${containers} container(s)`);
     process.exit({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal]);
   });
 }
