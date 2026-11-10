@@ -252,6 +252,12 @@ Claude Code de verdade, num projeto Node de exemplo com um remote bare:
   run, e o `HOME` e o repositório do agente foram apagados no fim. Nessa
   rodada o agente fez a revisão do diff sozinho, sem subagente — parte da
   diferença de custo vem daí.
+- **REQ-101 no modo container**: a primeira tentativa achou um bug — o docker
+  criava, com dono root, a pasta temporária que o Claude Code usa, e ele se
+  recusou a rodar (corrigido com um `TMPDIR` próprio no container). Na
+  segunda, `published` em 54 s, a US$ 0,17: 7 testes novos, 9/9 verdes na
+  verificação, também em container. O token passou ao `docker run` só por
+  nome, não aparece em nenhum arquivo do run, e nenhum container sobrou.
 
 ## Auditoria
 
