@@ -223,8 +223,13 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
     };
   }
 
-  // Pushed or not, the commit no longer needs a ref in the main clone.
-  await deps.git.dropCandidate(request.id).catch(() => undefined);
+  // A "ready" commit waits for someone to push it by hand from the main clone: keep its ref.
+  // Every other outcome no longer needs one, and a rejected commit must not stay reachable.
+  if (result.outcome !== 'ready') {
+    await deps.git.dropCandidate(request.id).catch((error: Error) => {
+      deps.log(`[${request.id}] could not drop the candidate ref: ${error.message}`);
+    });
+  }
 
   if (!result.keepWorkspace) {
     await discard(paths.workspace(request.id), deps).catch((error: Error) => {

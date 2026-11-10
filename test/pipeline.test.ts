@@ -129,6 +129,16 @@ describe('pollOnce — publication', () => {
     const report = await pollOnce(h.deps);
     expect(report.processed[0]?.outcome).toBe('ready');
     expect(h.git.pushed).toEqual([]);
+    // The verified commit stays reachable in the main clone, to be pushed by hand.
+    expect(h.git.calls).not.toContain('dropCandidate REQ-1');
+  });
+
+  it('logs, instead of hiding, a candidate ref it could not drop', async () => {
+    h.git.failOn = 'dropCandidate';
+    await h.addRequest(approved());
+    const [run] = (await pollOnce(h.deps)).processed;
+    expect(run?.outcome).toBe('published');
+    expect(h.logs).toContain('[REQ-1] could not drop the candidate ref: dropCandidate exploded');
   });
 });
 
