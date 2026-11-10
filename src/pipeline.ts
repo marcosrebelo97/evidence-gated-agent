@@ -221,6 +221,9 @@ export async function processRequest(loaded: LoadedRequest, deps: PipelineDeps, 
     };
   }
 
+  // Pushed or not, the commit no longer needs a ref in the main clone.
+  await deps.git.dropCandidate(request.id).catch(() => undefined);
+
   if (!result.keepWorkspace) {
     await discard(paths.workspace(request.id), deps).catch((error: Error) => {
       deps.log(`[${request.id}] could not remove workspace: ${error.message}`);

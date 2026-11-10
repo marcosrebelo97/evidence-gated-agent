@@ -101,6 +101,8 @@ describe('end to end with real git and a fake agent', () => {
     expect(run?.reasons.join('\n')).toMatch(reason);
     expect(remoteBranches(fixture.remote)).toEqual(['main']);
     expect(existsSync(runnerPaths(config.workDir).workspace('REQ-1'))).toBe(true);
+    // The rejected commit is not kept reachable in the main clone.
+    expect(git(fixture.clone, 'for-each-ref', 'refs/evidence-gated-agent').trim()).toBe('');
   });
 
   it('keeps publication with the orchestrator: the agent can neither push nor read its secrets', async () => {

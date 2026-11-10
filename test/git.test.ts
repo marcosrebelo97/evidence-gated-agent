@@ -90,6 +90,13 @@ describe('workspace (real git)', () => {
     expect(await ops.changedFiles(await ops.collect(workspace, 'REQ-1'))).toEqual(['configuração/.env']);
   });
 
+  it('drops the private ref of a finished run', async () => {
+    await commitFile(workspace, '.env', 'SECRET=1\n');
+    await ops.collect(workspace, 'REQ-1');
+    await ops.dropCandidate('REQ-1');
+    expect(git(fixture.clone, 'for-each-ref', CANDIDATE_REFS).trim()).toBe('');
+  });
+
   it('compares against the recorded base, so moving the base ref cannot hide a commit', async () => {
     const sneaky = await commitFile(workspace, '.env', 'SECRET=1\n');
     await commitFile(workspace, 'a.ts');

@@ -149,6 +149,8 @@ describe('pollOnce — the agent is not trusted', () => {
     expect(h.git.pushed).toEqual([]);
     // The rejected workspace is kept for inspection.
     expect(h.git.calls).not.toContain('removeWorkspace REQ-1');
+    // But its commit does not stay referenced in the main clone.
+    expect(h.git.calls).toContain('dropCandidate REQ-1');
   });
 
   it('collects the agent HEAD once, then derives every check from that SHA', async () => {

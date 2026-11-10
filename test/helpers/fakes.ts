@@ -45,6 +45,9 @@ export class FakeGit implements GitOps {
     this.check('collect', id);
     return this.state.commitsAhead > 0 ? FakeGit.SHA : FakeGit.BASE;
   }
+  async dropCandidate(id: string) {
+    this.check('dropCandidate', id);
+  }
   async commitsAhead() {
     this.check('commitsAhead');
     return this.state.commitsAhead;

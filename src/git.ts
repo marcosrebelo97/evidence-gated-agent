@@ -20,6 +20,11 @@ export interface GitOps {
    * From here on, the evidence, the verification and the push all use this SHA.
    */
   collect(workspace: string, id: string): Promise<string>;
+  /**
+   * Deletes the private ref of a finished run. Its SHA stays in the ledger and the evidence;
+   * the objects of a rejected commit (one that touched .env, say) become prunable.
+   */
+  dropCandidate(id: string): Promise<void>;
   /** Commits in `commit` that are not in the recorded base. */
   commitsAhead(commit: string): Promise<number>;
   /** Files changed by `commit` relative to the recorded base (renames as delete + add). */
@@ -140,6 +145,10 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       // config, hooks and attributes are not executed by this fetch.
       await inRepo(['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', workspace, `+HEAD:${ref}`]);
       return (await inRepo(['rev-parse', '--verify', `${ref}^{commit}`])).trim();
+    },
+
+    async dropCandidate(id) {
+      await inRepo(['update-ref', '-d', `${CANDIDATE_REFS}/${id}`]);
     },
 
     async commitsAhead(commit) {
