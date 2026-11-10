@@ -104,7 +104,7 @@ switch (scenario) {
   }
   case 'report-home':
     commit('feature.txt', 'ok\n');
-    finish('implemented', `home=${process.env.HOME} cache=${process.env.npm_config_cache}`);
+    finish('implemented', `home=${process.env.HOME}`);
     break;
   case 'crash':
     process.exit(1);

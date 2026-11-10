@@ -45,13 +45,13 @@ export interface AgentRunnerSettings {
   remote: string;
   passEnv?: readonly string[];
   gitAuthor: { name: string; email: string };
-  /** Fixed variables for the agent, e.g. a shared package cache. */
-  extraEnv?: Record<string, string>;
 }
 
 /** Subset of `claude -p --output-format json` that the orchestrator records. */
 const headlessOutputSchema = z.object({
   is_error: z.boolean().optional(),
+  /** The final message; on an error, why (e.g. an invalid API key). */
+  result: z.string().optional(),
   total_cost_usd: z.number().optional(),
   num_turns: z.number().optional(),
 });
@@ -68,6 +68,14 @@ export function parseHeadlessOutput(stdout: string): z.infer<typeof headlessOutp
 export function parseStatus(raw: string | undefined): AgentStatus | undefined {
   const value = raw?.trim().toLowerCase();
   return AGENT_STATUSES.find((status) => status === value);
+}
+
+function lastLine(text: string): string | undefined {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .at(-1);
 }
 
 async function readOptional(path: string): Promise<string | undefined> {
@@ -107,7 +115,7 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
           remote: settings.remote,
           passEnv: settings.passEnv ?? [],
           home,
-          extra: { ...settings.extraEnv, ...author },
+          extra: author,
         }),
         inheritEnv: false,
         killGroupOnExit: true,
@@ -119,9 +127,13 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
       const report = (await readOptional(reportPath)) ?? '';
 
       let contractViolation: string | undefined;
+      // The agent's own words travel with the failure, so the notification says what to fix
+      // (an expired token, a missing login) instead of only an exit code.
+      const cause = meta.result ?? lastLine(result.stderr);
+      const detail = cause ? `: ${cause.slice(0, 300)}` : '';
       if (result.timedOut) contractViolation = `agent timed out after ${settings.timeoutMs} ms`;
-      else if (result.code !== 0) contractViolation = `agent exited with code ${result.code}`;
-      else if (meta.is_error) contractViolation = 'agent session ended with an error';
+      else if (result.code !== 0) contractViolation = `agent exited with code ${result.code}${detail}`;
+      else if (meta.is_error) contractViolation = `agent session ended with an error${detail}`;
       else if (rawStatus === undefined) contractViolation = `agent did not write ${STATUS_FILE}`;
       else if (declared === undefined) contractViolation = `invalid ${STATUS_FILE} content: ${JSON.stringify(rawStatus.trim().slice(0, 50))}`;
 

@@ -39,8 +39,6 @@ export function runnerPaths(workDir: string) {
     verification: (id: string) => join(workDir, 'workspaces', `${id}.verify`),
     /** The isolated HOME that goes with a workspace or verification directory. */
     home: (dir: string) => `${dir}.home`,
-    /** npm cache shared by isolated runs, so each fresh HOME does not download everything again. */
-    npmCache: join(workDir, 'cache', 'npm'),
   };
 }
 

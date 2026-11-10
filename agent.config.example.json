@@ -21,7 +21,6 @@
       "--disallowedTools", "Bash(git push:*)", "WebFetch", "WebSearch"
     ],
     "timeoutMs": 1800000,
-    "passEnv": ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"],
     "gitAuthor": { "name": "support-agent", "email": "support-agent@users.noreply.github.com" }
   },
   "gates": [

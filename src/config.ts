@@ -64,8 +64,8 @@ export const configSchema = z.object({
   /**
    * Give the agent, the setup and the gates a fresh, empty HOME per run. On by default:
    * otherwise they read and can write the dotfiles of the user running the poll.
-   * Claude Code then authenticates through agent.passEnv (ANTHROPIC_API_KEY or
-   * CLAUDE_CODE_OAUTH_TOKEN, created with `claude setup-token`).
+   * Claude Code then authenticates through ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN
+   * (created with `claude setup-token`), which are passed to the agent automatically.
    */
   isolateHome: z.boolean().default(true),
   /** Runs in the fresh workspace before the agent (e.g. dependency install). */
@@ -76,8 +76,11 @@ export const configSchema = z.object({
       .array(z.string())
       .default(['-p', '--output-format', 'json', '--setting-sources', 'project', '--strict-mcp-config']),
     timeoutMs: z.number().int().positive().default(30 * 60_000),
-    /** Variables the agent needs beyond the sandbox baseline. By default, how Claude Code authenticates. */
-    passEnv: z.array(z.string().min(1)).default(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']),
+    /**
+     * Variables the agent needs beyond the sandbox baseline. With isolateHome, ANTHROPIC_API_KEY
+     * and CLAUDE_CODE_OAUTH_TOKEN are added automatically; other providers (Bedrock, Vertex) go here.
+     */
+    passEnv: z.array(z.string().min(1)).default([]),
     playbook: z.string().min(1).optional(),
     /** Author of the agent's commits. Required in practice: an isolated HOME has no git identity. */
     gitAuthor: z

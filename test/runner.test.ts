@@ -95,6 +95,20 @@ describe('agent runner', () => {
     expect(run.contractViolation).toMatch(reason);
   });
 
+  it("carries the agent's own error into the failure, so the notification says what to fix", async () => {
+    const invalidKey = createAgentRunner(
+      fakeExec({}, { code: 1, stdout: '{"is_error":true,"result":"Invalid API key · Please run /login"}' }),
+      settings,
+    );
+    expect((await invalidKey.run({ workspace: '/ws', runDir, prompt: 'p' })).contractViolation).toBe(
+      'agent exited with code 1: Invalid API key · Please run /login',
+    );
+    const crashed = createAgentRunner(fakeExec({}, { code: 2, stderr: 'warming up\nError: ENOSPC\n' }), settings);
+    expect((await crashed.run({ workspace: '/ws', runDir, prompt: 'p' })).contractViolation).toBe(
+      'agent exited with code 2: Error: ENOSPC',
+    );
+  });
+
   it('never reads the contract files of a previous attempt', async () => {
     await writeFile(join(runDir, 'STATUS'), 'implemented');
     const runner = createAgentRunner(fakeExec({}), settings);
