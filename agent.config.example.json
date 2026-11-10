@@ -1,0 +1,30 @@
+{
+  "repoPath": "../seu-projeto",
+  "remote": "origin",
+  "baseBranch": "main",
+  "branchPrefix": "agent/",
+  "inboxDir": "./examples/inbox",
+  "workDir": "./.agent-runner",
+  "forbiddenPaths": [".env", ".env.*", "**/*.pem", "**/*.key", "**/secrets/**"],
+  "setup": [{ "name": "install", "command": "npm", "args": ["ci"], "timeoutMs": 600000 }],
+  "agent": {
+    "command": "claude",
+    "args": [
+      "-p",
+      "--output-format", "json",
+      "--permission-mode", "acceptEdits",
+      "--allowedTools", "Read", "Edit", "Write", "Glob", "Grep", "Task",
+      "Bash(npm test:*)", "Bash(npx tsc:*)", "Bash(npx vitest:*)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git add:*)", "Bash(git commit:*)",
+      "--disallowedTools", "Bash(git push:*)", "WebFetch", "WebSearch"
+    ],
+    "timeoutMs": 1800000,
+    "gitAuthor": { "name": "support-agent", "email": "support-agent@users.noreply.github.com" }
+  },
+  "gates": [
+    { "name": "tests", "command": "npm", "args": ["test"] },
+    { "name": "typecheck", "command": "npx", "args": ["tsc", "--noEmit"] }
+  ],
+  "push": true,
+  "notifier": { "type": "console" }
+}

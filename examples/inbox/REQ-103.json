@@ -1,0 +1,6 @@
+{
+  "id": "REQ-103",
+  "title": "Exportar listagem em CSV",
+  "description": "Adicionar um botão para exportar a listagem filtrada em CSV.",
+  "requestedBy": "financeiro@exemplo.com"
+}

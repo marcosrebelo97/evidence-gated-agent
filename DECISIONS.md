@@ -1,0 +1,120 @@
+# Decisões de projeto
+
+Cada decisão com o porquê — inclusive o que foi decidido **não** fazer.
+
+## 1. Orquestrador determinístico, IA só no miolo
+
+Detecção, worktree, gates, push e notificação são código comum. O LLM entra
+apenas onde há raciocínio: interpretar o pedido e os prints, e implementar.
+
+**Por quê:** cada etapa determinística é testável, auditável e não custa token.
+Colocar um modelo para decidir "posso fazer push?" trocaria uma regra
+verificável por uma opinião.
+
+## 2. Sem framework de agentes
+
+O agente é o Claude Code em modo headless (`claude -p`), que já traz
+ferramentas, sandbox de permissões e sessão. O orquestrador só o invoca.
+
+**Por quê:** um framework adicionaria abstração sem resolver nada que o caso
+precisa. Ele passa a fazer sentido com vários agentes cooperando ou com fila e
+roteamento — e aí a fronteira já está clara: substitui-se o `AgentRunner`.
+
+## 3. Contrato por arquivos (`STATUS` + `REPORT.md`)
+
+O agente escreve uma palavra em `STATUS` e um relatório em pt-BR em
+`REPORT.md`, na pasta do run (liberada com `--add-dir`), nunca no repositório.
+
+**Por quê:** é o contrato mais simples que um humano consegue depurar com `cat`.
+Ficar fora do worktree evita que o contrato vá parar num commit. Qualquer
+desvio (arquivo ausente, valor inválido, crash, timeout, sessão com erro) vira
+`failed` — o contrato é estrito porque a decisão depende dele.
+
+## 4. A autodeclaração é precondição, não prova
+
+O push exige `implemented` **e** commit novo **e** worktree limpo **e** nenhum
+caminho proibido **e** gates verdes reexecutados pelo orquestrador. A decisão é
+uma função pura.
+
+**Por quê:** modelos declaram sucesso com confiança mesmo quando não há
+sucesso. Cada condição corresponde a um modo real de falha: "fiz" sem commit,
+alteração esquecida fora do commit (os testes rodariam sobre algo diferente do
+publicado), toque em segredo, suíte vermelha. Ser pura permite testar todas as
+combinações sem git nem processo.
+
+## 5. Worktree limpo é exigido
+
+Se sobrar arquivo sem commit, o resultado é `rejected`, mesmo com gates verdes.
+
+**Por quê:** os gates rodam no working tree. Com sobras, eles validam um estado
+que não é o que vai ser publicado.
+
+## 6. Gates rodam até o fim; e só quando vale
+
+Todos os gates rodam, mesmo após a primeira falha. Mas eles nem começam se a
+evidência barata (status, commit, worktree, escopo) já descarta a publicação.
+
+**Por quê:** quem revisa um `rejected` quer ver tudo o que está vermelho de uma
+vez. E não faz sentido gastar minutos de suíte num run que já não pode ser
+publicado.
+
+## 7. `blocked` é um desfecho próprio
+
+O roteiro manda parar diante de ambiguidade e devolver perguntas numeradas. O
+orquestrador trata `blocked` separado de `failed`, sem push e sem gates.
+
+**Por quê:** um agente que bloqueia certo vale tanto quanto um que implementa
+certo. Misturar os dois esconderia a métrica mais útil para melhorar a
+qualidade das solicitações.
+
+## 8. Ledger em JSON com escrita atômica, não banco
+
+Um arquivo, gravado via arquivo temporário + `rename`, protegido pelo lock do
+poll.
+
+**Por quê:** o volume é de dezenas de solicitações, não milhares. Um banco
+traria dependência nativa e operação sem ganho. O `rename` é atômico no mesmo
+sistema de arquivos, então um crash nunca deixa o ledger pela metade. Ledger
+corrompido falha alto em vez de recomeçar do zero — recomeçar faria tudo rodar
+de novo.
+
+## 9. Run interrompido vira `failed`, nunca é retentado sozinho
+
+Com o lock em mãos, uma entrada `running` só pode ser de um processo que morreu.
+Ela vira `failed` com o motivo.
+
+**Por quê:** retentar automaticamente pode repetir um efeito parcial (por
+exemplo, um push que chegou a acontecer). A nova tentativa é uma decisão
+humana, explícita: `npm run retry -- <id>`. Cada tentativa ganha sua própria
+pasta, então a anterior continua auditável.
+
+## 10. Nenhum processo passa por shell
+
+Tudo é criado com `spawn(command, args, { shell: false })`, num grupo de
+processos próprio.
+
+**Por quê:** texto de solicitação nunca pode virar comando. O grupo próprio
+garante que o timeout derrube também o que o agente iniciou (testes, servidores).
+
+## 11. Branch própria, `-B` e push sem força
+
+O agente trabalha em `agent/<id>-<slug>`, criada com `-B` a partir da base
+remota. O push nunca usa `--force` e recusa a branch base.
+
+**Por quê:** `-B` faz um retry partir da base atual, não de uma tentativa velha.
+Sem `--force`, um retry de algo já publicado falha em vez de reescrever uma
+branch que alguém pode estar revisando.
+
+## O que decidi não fazer (por enquanto)
+
+- **Abrir PR automaticamente.** O push de branch já entrega o essencial para a
+  revisão; o PR com template é o próximo passo.
+- **Paralelismo.** Uma solicitação por vez mantém o custo e a carga de revisão
+  previsíveis. O estado já está isolado por solicitação para quando houver fila.
+- **Retry automático.** Ver decisão 9.
+- **Gate de code-review por IA fora do agente.** O review do próprio diff está
+  no roteiro (etapa 7). Um gate externo de review por IA pode ser plugado como
+  mais um comando em `gates`, mas não substitui os gates objetivos.
+- **Cliente para um sistema de tickets específico.** `RequestSource` é a
+  interface; a implementação por pasta serve para o padrão ficar demonstrável
+  sem acoplar a um produto.

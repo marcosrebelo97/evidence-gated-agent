@@ -1,0 +1,11 @@
+{
+  "id": "REQ-101",
+  "title": "Filtro por período na listagem de pedidos",
+  "description": "Na tela de listagem de pedidos, preciso filtrar por período (data inicial e data final) usando a data de criação do pedido. As duas datas são opcionais: só a inicial traz tudo a partir dela; só a final traz tudo até ela. A data final deve incluir o dia inteiro.",
+  "requestedBy": "operacao@exemplo.com",
+  "attachments": ["attachments/listagem-pedidos.png"],
+  "approval": {
+    "approvedBy": "lider-tecnico@exemplo.com",
+    "approvedAt": "2026-01-15T10:30:00-03:00"
+  }
+}
