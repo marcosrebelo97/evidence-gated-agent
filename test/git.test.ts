@@ -1,9 +1,9 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { exec, type Exec, type ExecOptions } from '../src/exec.js';
-import { CANDIDATE_REFS, createGit, type Baseline, type GitOps } from '../src/git.js';
+import { CANDIDATE_REFS, createGit, packOfBundle, type Baseline, type GitOps } from '../src/git.js';
 import { hostIsolation, type IsolatedExecOptions, type Isolation } from '../src/isolation.js';
 import { createGitFixture, git, remoteBranches, type GitFixture } from './helpers/git-fixture.js';
 
@@ -258,6 +258,38 @@ describe('the agent cannot reach the orchestrator through git', () => {
     expect(git(fixture.clone, 'for-each-ref', CANDIDATE_REFS).trim()).toBe('');
   });
 
+  it('ignores refs/replace: HEAD cannot pass for a commit the main clone has elsewhere', async () => {
+    // A commit the main clone has and the workspace never received (another branch, say).
+    git(fixture.clone, 'checkout', '--quiet', '-b', 'other');
+    const elsewhere = await commitFile(fixture.clone, 'other.ts');
+    git(fixture.clone, 'checkout', '--quiet', 'main');
+    const own = await commitFile(workspace, 'feature.ts');
+    git(workspace, 'update-ref', `refs/replace/${elsewhere}`, own);
+    await writeFile(join(workspace, '.git', 'HEAD'), `${elsewhere}\n`);
+
+    await expect(ops.collect(workspace, 'REQ-1', base)).rejects.toThrow(/rev-parse/);
+    expect(git(fixture.clone, 'for-each-ref', CANDIDATE_REFS).trim()).toBe('');
+  });
+
+  it('runs fsck on every object of the bundle: a malformed commit never enters the main clone', async () => {
+    const tree = git(workspace, 'rev-parse', 'HEAD^{tree}').trim();
+    const body = `tree ${tree}\nparent ${base}\nauthor no-email 1 +0000\ncommitter x <x@y> 1 +0000\n\nbad\n`;
+    await writeFile(join(fixture.root, 'bad-commit'), body);
+    const bad = git(workspace, 'hash-object', '-t', 'commit', '-w', '--literally', join(fixture.root, 'bad-commit')).trim();
+    git(workspace, 'update-ref', 'HEAD', bad);
+
+    await expect(ops.collect(workspace, 'REQ-1', base)).rejects.toThrow(/fsck error/);
+    expect(() => git(fixture.clone, 'cat-file', '-e', bad)).toThrow();
+  });
+
+  it('refuses a workspace whose .git points at another repository', async () => {
+    await commitFile(workspace, 'feature.ts');
+    await rm(join(workspace, '.git'), { recursive: true, force: true });
+    await writeFile(join(workspace, '.git'), `gitdir: ${join(fixture.clone, '.git')}\n`);
+    await expect(ops.collect(workspace, 'REQ-1', base)).rejects.toThrow('.git is not a directory');
+    await expect(ops.dirtyFiles(workspace)).rejects.toThrow('.git is not a directory');
+  });
+
   it('collects a HEAD moved back into the base history without a bundle', async () => {
     git(fixture.clone, 'commit', '--quiet', '--allow-empty', '-m', 'second');
     git(fixture.clone, 'push', '--quiet', 'origin', 'main');
@@ -364,5 +396,26 @@ describe('verification and push (real git)', () => {
   it('removes the workspace', async () => {
     await ops.removeWorkspace(workspace);
     expect(existsSync(workspace)).toBe(false);
+  });
+});
+
+describe('packOfBundle', () => {
+  const head = 'a'.repeat(40);
+  const bundle = (header: string) => Buffer.concat([Buffer.from(`${header}\n\n`), Buffer.from('PACK\x00\x00\x00\x02')]);
+
+  it('returns the pack of a bundle holding only HEAD at the expected commit', () => {
+    const pack = packOfBundle(bundle(`# v2 git bundle\n-${'b'.repeat(40)} base\n${head} HEAD`), head);
+    expect(pack.subarray(0, 4).toString()).toBe('PACK');
+  });
+
+  it('refuses other refs, another HEAD and other formats', () => {
+    expect(() => packOfBundle(bundle(`# v2 git bundle\n${head} HEAD\n${head} refs/heads/main`), head)).toThrow(
+      /exactly HEAD/,
+    );
+    expect(() => packOfBundle(bundle(`# v2 git bundle\n${'c'.repeat(40)} HEAD`), head)).toThrow(/exactly HEAD/);
+    expect(() => packOfBundle(bundle(`# v3 git bundle\n@object-format=sha1\n${head} HEAD`), head)).toThrow(
+      /unsupported bundle/,
+    );
+    expect(() => packOfBundle(Buffer.from('no header'), head)).toThrow(/no header/);
   });
 });

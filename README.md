@@ -122,8 +122,8 @@ destacados na notificação para o revisor (`attentionPaths`).
   dentro (`rev-parse`, `status`, o `bundle` dos commits novos) passa pela
   mesma isolação do agente, sem rede, com um `HOME` descartável e nenhuma
   config global — um filtro plantado pelo agente roda sem privilégio e não
-  alcança os dotfiles do usuário. O clone principal só recebe o bundle, com
-  `transfer.fsckObjects`; o checkout da verificação roda num repositório novo,
+  alcança os dotfiles do usuário. O clone principal só recebe o pack do
+  bundle, com `index-pack --strict` (fsck em cada objeto); o checkout da verificação roda num repositório novo,
   do orquestrador, com o mesmo ambiente restrito. Repositórios novos nascem sem os hooks de
   template do usuário. Os comandos git do orquestrador rodam sem hooks e sem
   fsmonitor.

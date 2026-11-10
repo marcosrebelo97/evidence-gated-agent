@@ -36,7 +36,8 @@ agente com evidência objetiva — nunca a IA.**
    repositório dele passam por `Isolation` (`src/isolation.ts`), declarando
    mounts e rede; o git roda sem rede, com um `HOME` descartável e
    `GIT_CONFIG_GLOBAL=/dev/null`. O commit chega ao clone principal só como
-   bundle, com `transfer.fsckObjects`.
+   bundle, gravado com `index-pack --strict`; esse git roda com
+   `GIT_NO_REPLACE_OBJECTS=1` e exige `.git` como diretório.
    Evidência, verificação e push saem da `Baseline` (SHA da base e push URLs,
    anotados no `fetch`) e do SHA coletado; o push é recusado se os URLs
    mudaram. Só o setup sobre a base intacta usa o `HOME` do usuário.

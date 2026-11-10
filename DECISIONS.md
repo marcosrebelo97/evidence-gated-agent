@@ -204,9 +204,23 @@ A coleta começou com `git fetch` do repositório do agente (`upload-pack` é
 feito para servir repositórios não confiáveis). Para o modo container, nem isso
 podia rodar no host: hoje o `git bundle create HEAD ^<base>` roda com a
 isolação do agente, sem rede, num diretório próprio fora do workspace; o host
-confere que o bundle é um arquivo regular e faz o `fetch` dele com
-`transfer.fsckObjects`. Se o HEAD já existe no clone principal (nenhum commit
-novo), não há bundle.
+confere que o bundle é um arquivo regular, que ele traz só `HEAD` no SHA
+esperado, e grava o pack com `git index-pack --strict`, que roda fsck em cada
+objeto. Só um HEAD que é a base ou um ancestral dela dispensa o bundle.
+
+A revisão desta etapa achou três brechas, corrigidas:
+
+- O `fetch` de um bundle não roda fsck no git anterior ao 2.47, mesmo com
+  `transfer.fsckObjects`: um commit malformado entrava no clone principal. Daí
+  o `index-pack --strict`.
+- Com um `refs/replace/<X>` apontando para o próprio commit e X escrito no
+  HEAD, o `rev-parse` do workspace respondia X, um commit que o clone
+  principal tinha em outra branch, e a coleta pulava o bundle. O git no
+  workspace roda com `GIT_NO_REPLACE_OBJECTS=1`, e o atalho sem bundle vale só
+  para o histórico da base.
+- Um `.git` trocado por um arquivo `gitdir: <clone principal>/.git` apontava o
+  git do orquestrador para outro repositório. O workspace precisa ter `.git`
+  como diretório.
 
 O git que o orquestrador roda dentro desses diretórios recebe um `HOME`
 descartável, sem config global nem de sistema: um filtro que o agente plantou

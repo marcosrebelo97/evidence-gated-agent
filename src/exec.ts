@@ -7,7 +7,7 @@ export interface ExecOptions {
   /** When false, the child sees only `env` (plus nothing from this process). Defaults to true. */
   inheritEnv?: boolean;
   /** Written to the child's stdin, which is then closed. */
-  input?: string;
+  input?: string | Buffer;
   /**
    * Kill the whole process group when the child exits, even normally. For untrusted
    * children: whatever they left running in the background must not outlive them.

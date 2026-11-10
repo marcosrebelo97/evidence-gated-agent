@@ -1,4 +1,4 @@
-import { lstat, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from './exec.js';
@@ -86,6 +86,27 @@ function nulSeparated(output: string): string[] {
   return output.split('\0').filter((entry) => entry.length > 0);
 }
 
+/** A bundle is the agent's new commits: far below this, or something is wrong. */
+const MAX_BUNDLE_BYTES = 1024 * 1024 * 1024;
+
+/**
+ * The pack inside a v2 bundle, after checking its header: exactly one ref, HEAD, at `head`.
+ * Prerequisites (`-<sha>`) are checked by index-pack, which needs them to complete the pack.
+ */
+export function packOfBundle(bundle: Buffer, head: string): Buffer {
+  const end = bundle.indexOf('\n\n');
+  if (end === -1 || end > 1024 * 1024) throw new Error('not a git bundle: no header');
+  const [signature, ...lines] = bundle.subarray(0, end).toString('utf8').split('\n');
+  if (signature !== '# v2 git bundle') throw new Error(`unsupported bundle: ${JSON.stringify(signature)}`);
+  const refs = lines.filter((line) => !line.startsWith('-'));
+  if (refs.length !== 1 || refs[0] !== `${head} HEAD`) {
+    throw new Error(`the agent bundle must hold exactly HEAD at ${head}, not ${JSON.stringify(refs)}`);
+  }
+  const pack = bundle.subarray(end + 2);
+  if (pack.subarray(0, 4).toString('latin1') !== 'PACK') throw new Error('not a git bundle: no pack');
+  return pack;
+}
+
 /** Private namespace in the main clone for commits collected from agent workspaces. */
 export const CANDIDATE_REFS = 'refs/evidence-gated-agent';
 
@@ -107,8 +128,13 @@ export function createGit(exec: Exec, settings: GitSettings, isolation: Isolatio
   };
   const inRepo = (args: string[]) => run(settings.repoPath, args);
   /** The environment for git on content the agent wrote: no user or system git config either. */
+  // GIT_NO_REPLACE_OBJECTS: a refs/replace/* the agent wrote must not make one object pass for another.
   const untrustedEnv = (home: string) =>
-    sandboxEnv({ remote: settings.remote, home, extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+    sandboxEnv({
+      remote: settings.remote,
+      home,
+      extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_NO_REPLACE_OBJECTS: '1' },
+    });
   /** A throwaway HOME too: a filter planted in the agent's config must not reach the user's dotfiles. */
   const withThrowawayHome = async <T>(fn: (home: string) => Promise<T>): Promise<T> => {
     const home = await mkdtemp(join(tmpdir(), 'ega-git-home-'));
@@ -119,8 +145,11 @@ export function createGit(exec: Exec, settings: GitSettings, isolation: Isolatio
     }
   };
   /** Git inside the agent's workspace, with the agent's isolation and no network. */
-  const inWorkspace = (workspace: string, args: string[], extraMounts: Mount[] = []): Promise<string> =>
-    withThrowawayHome(async (home) => {
+  const inWorkspace = async (workspace: string, args: string[], extraMounts: Mount[] = []): Promise<string> => {
+    // A .git file ("gitdir: <main clone>/.git") would point this git at another repository.
+    const dotGit = await lstat(join(workspace, '.git')).catch(() => undefined);
+    if (!dotGit?.isDirectory()) throw new Error("the agent repository's .git is not a directory");
+    return withThrowawayHome(async (home) => {
       const result = await isolation.exec('git', [...SAFE_GIT, ...args], {
         cwd: workspace,
         timeoutMs: GIT_TIMEOUT_MS,
@@ -133,13 +162,35 @@ export function createGit(exec: Exec, settings: GitSettings, isolation: Isolatio
       if (result.code !== 0) throw new GitError(args, result.code, result.stderr);
       return result.stdout;
     });
-  /** Whether the main clone already has `commit` (the base, or an ancestor of it). */
-  const hasCommit = async (commit: string): Promise<boolean> => {
-    const result = await exec('git', [...SAFE_GIT, 'cat-file', '-e', `${commit}^{commit}`], {
+  };
+  /**
+   * Whether `commit` is the base or one of its ancestors in the main clone. Only then is a HEAD
+   * collected without a bundle: any other commit the main clone happens to have (another
+   * branch, a local commit of the user's) must come from the agent's own objects.
+   */
+  const isInBaseHistory = async (commit: string, base: string): Promise<boolean> => {
+    const result = await exec('git', [...SAFE_GIT, 'merge-base', '--is-ancestor', commit, base], {
       cwd: settings.repoPath,
       timeoutMs: GIT_TIMEOUT_MS,
     });
     return result.code === 0;
+  };
+  /**
+   * Stores the bundle's objects in the main clone with `index-pack --strict`, which runs fsck on
+   * every object. `git fetch <bundle>` does not, whatever transfer.fsckObjects says (git < 2.47).
+   */
+  const indexBundle = async (bundle: string, head: string): Promise<void> => {
+    const info = await lstat(bundle);
+    if (!info.isFile()) throw new Error('the agent bundle is not a regular file');
+    if (info.size > MAX_BUNDLE_BYTES) throw new Error(`the agent bundle is larger than ${MAX_BUNDLE_BYTES} bytes`);
+    const pack = packOfBundle(await readFile(bundle), head);
+    const args = ['index-pack', '--strict', '--fix-thin', '--stdin'];
+    const result = await exec('git', [...SAFE_GIT, ...args], {
+      cwd: settings.repoPath,
+      timeoutMs: GIT_TIMEOUT_MS,
+      input: pack,
+    });
+    if (result.code !== 0) throw new GitError(args, result.code, result.stderr);
   };
   /** Push URLs of the remote, after any insteadOf rewriting: exactly where a push would go. */
   const pushUrlsNow = async (): Promise<string[]> =>
@@ -192,35 +243,23 @@ export function createGit(exec: Exec, settings: GitSettings, isolation: Isolatio
       const head = (await inWorkspace(workspace, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
       assertSha(head);
 
-      if (await hasCommit(head)) {
-        // No new commit (or the agent moved HEAD back into the base's history): nothing to transfer.
-        await inRepo(['update-ref', ref, head]);
-      } else {
+      if (!(await isInBaseHistory(head, base))) {
         // The bundle goes to a directory of its own, outside the workspace, created now.
         const outDir = `${workspace}.out`;
         const bundle = join(outDir, 'head.bundle');
         await rm(outDir, { recursive: true, force: true });
         await mkdir(outDir, { mode: 0o700 });
         try {
-          await inWorkspace(workspace, ['bundle', 'create', '--quiet', bundle, 'HEAD', `^${base}`], [
+          await inWorkspace(workspace, ['bundle', 'create', '--quiet', '--version=2', bundle, 'HEAD', `^${base}`], [
             { path: outDir, writable: true },
           ]);
-          if (!(await lstat(bundle)).isFile()) throw new Error('the agent bundle is not a regular file');
-          // fsckObjects: the bundle is untrusted input, so every object is checked as it is indexed.
-          await inRepo([
-            '-c',
-            'transfer.fsckObjects=true',
-            'fetch',
-            '--quiet',
-            '--no-tags',
-            '--no-write-fetch-head',
-            bundle,
-            `+HEAD:${ref}`,
-          ]);
+          await indexBundle(bundle, head);
         } finally {
           await rm(outDir, { recursive: true, force: true });
         }
       }
+      // No new commit (or HEAD moved back into the base's history) needs no transfer.
+      await inRepo(['update-ref', ref, head]);
 
       const collected = (await inRepo(['rev-parse', '--verify', `${ref}^{commit}`])).trim();
       if (collected !== head) throw new Error(`collected ${collected}, but the agent's HEAD is ${head}`);
