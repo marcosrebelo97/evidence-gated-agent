@@ -27,7 +27,9 @@ citando arquivo e linha quando enfraquecido:
    continua envolvendo a leitura e a escrita do ledger?
 5. **Isolamento e auditoria** — o clone principal continua intocado? Cada
    tentativa continua com sua própria pasta em `runs/`? Algum artefato deixou
-   de ser gravado?
+   de ser gravado? O agente ganhou acesso a algo além de `contract/` e
+   `attachments/`? Algum arquivo escrito pelo agente passou a ser lido seguindo
+   symlink, ou algum arquivo de auditoria deixou de ser criado com `wx`?
 6. **Sem shell** — algum `spawn`/`exec` novo usa `shell: true`, `execSync` com
    string, ou concatena texto da solicitação num comando?
 7. **Sandbox** — algum processo do agente ou dos gates passou a herdar o

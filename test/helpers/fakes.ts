@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentRun, AgentRunner, AgentStatus } from '../../src/agent/runner.js';
+import type { AgentRun, AgentRunInput, AgentRunner, AgentStatus } from '../../src/agent/runner.js';
 import { parseConfig, type ResolvedConfig } from '../../src/config.js';
 import type { GateResult } from '../../src/gates.js';
 import type { GitOps } from '../../src/git.js';
@@ -80,11 +80,16 @@ export class FakeAgent implements AgentRunner {
   constructor(private readonly git: FakeGit) {}
 
   readonly homes: (string | undefined)[] = [];
+  readonly inputs: AgentRunInput[] = [];
+  /** What else the agent does on disk while it runs (e.g. plants a symlink). */
+  onRun?: (input: AgentRunInput) => Promise<void>;
 
-  async run({ prompt, home }: { prompt: string; home?: string | undefined }): Promise<AgentRun> {
-    this.prompts.push(prompt);
-    this.homes.push(home);
+  async run(input: AgentRunInput): Promise<AgentRun> {
+    this.inputs.push(input);
+    this.prompts.push(input.prompt);
+    this.homes.push(input.home);
     this.git.state = { ...this.git.state, ...this.effect };
+    await this.onRun?.(input);
     return {
       status: this.declared,
       report: this.report,

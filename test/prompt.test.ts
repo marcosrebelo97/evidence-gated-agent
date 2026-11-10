@@ -17,7 +17,7 @@ const base = {
   request,
   branch: 'agent/REQ-7-filtro-por-periodo',
   baseRef: 'origin/main',
-  runDir: '/runs/REQ-7',
+  contractDir: '/runs/REQ-7/contract',
   statusFile: '/runs/REQ-7/STATUS',
   reportFile: '/runs/REQ-7/REPORT.md',
   attachments: ['/runs/REQ-7/attachments/tela.png'],

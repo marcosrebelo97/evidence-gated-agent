@@ -5,7 +5,8 @@ export interface PromptInput {
   request: ApprovedRequest;
   branch: string;
   baseRef: string;
-  runDir: string;
+  /** Where the agent writes STATUS and REPORT.md: never the repository. */
+  contractDir: string;
   statusFile: string;
   reportFile: string;
   /** Absolute paths of the attachments copied into the run directory. */
@@ -43,7 +44,7 @@ export function buildPrompt(input: PromptInput): string {
     REQUEST: formatRequest(input.request),
     ATTACHMENTS:
       input.attachments.length > 0 ? input.attachments.map((path) => `- ${path}`).join('\n') : '- (nenhum)',
-    RUN_DIR: input.runDir,
+    CONTRACT_DIR: input.contractDir,
     STATUS_FILE: input.statusFile,
     REPORT_FILE: input.reportFile,
   };

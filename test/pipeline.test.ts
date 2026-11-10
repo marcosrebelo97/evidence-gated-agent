@@ -1,5 +1,5 @@
-import { mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, mkdir, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pollOnce, runnerPaths } from '../src/pipeline.js';
 import { Ledger } from '../src/state/ledger.js';
@@ -118,7 +118,11 @@ describe('pollOnce — publication', () => {
     );
     const prompt = await readFile(join(runDir, 'prompt.md'), 'utf8');
     expect(prompt).toContain('branch=agent/REQ-1-filtro-por-periodo');
-    expect(prompt).toContain(`status=${join(runDir, 'STATUS')}`);
+    expect(prompt).toContain(`status=${join(runDir, 'contract', 'STATUS')}`);
+    expect(h.agent.inputs[0]).toMatchObject({
+      contractDir: join(runDir, 'contract'),
+      readDirs: [join(runDir, 'attachments')],
+    });
     const evidence = JSON.parse(await readFile(join(runDir, 'evidence.json'), 'utf8'));
     expect(evidence).toMatchObject({ declared: 'implemented', commitsAhead: 1, decision: { publish: true } });
   });
@@ -277,6 +281,25 @@ describe('pollOnce — idempotency and concurrency', () => {
     expect(report.pending).toEqual(['REQ-2']);
     expect(report.invalid.map((i) => i.file)).toEqual(['broken.json']);
     expect(report.processed.map((r) => r.id)).toEqual(['REQ-3']);
+  });
+});
+
+describe('audit trail', () => {
+  it('never writes an audit file through a symlink planted in the run directory', async () => {
+    const outside = join(h.root, 'bashrc');
+    await writeFile(outside, 'original');
+    h.agent.onRun = async ({ contractDir }) => {
+      for (const name of ['agent-output.json', 'evidence.json', 'summary.json']) {
+        await symlink(outside, join(dirname(contractDir), name));
+      }
+    };
+    await h.addRequest(approved());
+    await pollOnce(h.deps);
+    expect(await readFile(outside, 'utf8')).toBe('original');
+    const runDir = await runDirOf('REQ-1');
+    for (const name of ['agent-output.json', 'evidence.json', 'summary.json']) {
+      expect((await lstat(join(runDir, name))).isFile()).toBe(true);
+    }
   });
 });
 

@@ -216,12 +216,12 @@ Cada tentativa guarda tudo o que é preciso para reconstruir a decisão:
 ├── ledger.json                      # uma entrada por solicitação (status, SHA, custo)
 └── runs/REQ-101/2026-01-15T13-40-00-000Z/
     ├── request.json                 # a solicitação como chegou
-    ├── attachments/                 # cópias dos anexos que o agente viu
+    ├── attachments/                 # cópias dos anexos que o agente viu (só leitura)
     ├── setup.json                   # resultado do setup (ex.: npm ci)
     ├── prompt.md                    # o prompt exato
     ├── agent-output.json            # saída da sessão headless (custo, turnos)
     ├── agent-stderr.log             # diagnóstico quando o agente falha
-    ├── STATUS / REPORT.md           # contrato escrito pelo agente
+    ├── contract/STATUS, REPORT.md   # contrato: a única pasta em que o agente escreve
     ├── evidence.json                # SHA, arquivos, gates, atenção e a decisão
     └── summary.json                 # o que foi notificado
 ```

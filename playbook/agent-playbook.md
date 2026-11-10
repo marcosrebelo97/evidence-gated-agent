@@ -27,7 +27,7 @@ Anexos (prints de tela, logs), para abrir com a ferramenta de leitura:
 - Não leia nem altere `.env*`, chaves, segredos ou credenciais.
 - Use `git add` com caminhos explícitos — nunca `git add -A` nem `git add .`.
 - Não reformate código que a mudança não exigiu.
-- Escreva os arquivos de contrato apenas em `{{RUN_DIR}}`, nunca no repositório.
+- Escreva os arquivos de contrato apenas em `{{CONTRACT_DIR}}`, nunca no repositório.
 
 ## Roteiro (10 etapas)
 

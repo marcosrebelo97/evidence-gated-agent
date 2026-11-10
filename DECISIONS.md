@@ -28,7 +28,16 @@ roteamento — e aí a fronteira já está clara: substitui-se o `AgentRunner`.
 ## 3. Contrato por arquivos (`STATUS` + `REPORT.md`)
 
 O agente escreve uma palavra em `STATUS` e um relatório em pt-BR em
-`REPORT.md`, na pasta do run (liberada com `--add-dir`), nunca no repositório.
+`REPORT.md`, em `contract/` dentro da pasta do run, nunca no repositório. Só
+`contract/` e `attachments/` são liberadas com `--add-dir`; os arquivos de
+auditoria do orquestrador ficam fora do alcance declarado do agente.
+
+Os dois arquivos são lidos com `O_NOFOLLOW`, precisam ser arquivos regulares e
+ter até 256 KB. Um `REPORT.md` trocado por symlink para `~/.ssh/id_ed25519`
+vira `failed`, sem o conteúdo chegar à notificação. Os arquivos de auditoria
+são sempre criados do zero (`O_CREAT | O_EXCL`), então um symlink plantado no
+lugar de `evidence.json` não desvia a escrita. Com o agente no mesmo usuário
+do SO, isso fecha o caminho direto, não um agente determinado a burlar.
 
 **Por quê:** é o contrato mais simples que um humano consegue depurar com `cat`.
 Ficar fora do repositório evita que o contrato vá parar num commit. Qualquer

@@ -22,7 +22,9 @@ agente com evidência objetiva — nunca a IA.**
    `running` para sempre.
 5. **Isolamento e auditoria**: um repositório e um `HOME` descartáveis por solicitação; cada
    tentativa preserva solicitação, anexos, prompt, saída e stderr do agente,
-   evidências e relatório em `<workDir>/runs/<id>/<tentativa>/`.
+   evidências e relatório em `<workDir>/runs/<id>/<tentativa>/`. O agente só
+   recebe `contract/` (escrita) e `attachments/` (leitura); o contrato é lido
+   sem seguir symlink e a auditoria é sempre criada do zero.
 6. **Sem shell**: todo processo externo é chamado com `spawn` e `shell: false`
    — texto de solicitação nunca vira comando.
 7. **Sandbox**: agente e gates rodam com `inheritEnv: false` e o ambiente de

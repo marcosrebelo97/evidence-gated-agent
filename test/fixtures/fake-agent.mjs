@@ -1,12 +1,12 @@
 // Stands in for `claude -p` in end-to-end tests.
-// Usage: node fake-agent.mjs <scenario> [claude flags...] --add-dir <runDir>  (prompt on stdin)
+// Usage: node fake-agent.mjs <scenario> [claude flags...] --add-dir <contractDir> [--add-dir <dir>...]  (prompt on stdin)
 import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
 const scenario = args[0];
-const runDir = args[args.lastIndexOf('--add-dir') + 1];
+const contractDir = args[args.indexOf('--add-dir') + 1];
 const prompt = readFileSync(0, 'utf8');
 
 const git = (...gitArgs) => execFileSync('git', gitArgs, { stdio: 'pipe' });
@@ -18,8 +18,8 @@ function commit(file, content) {
 }
 
 function finish(status, report) {
-  writeFileSync(join(runDir, 'STATUS'), `${status}\n`);
-  writeFileSync(join(runDir, 'REPORT.md'), report);
+  writeFileSync(join(contractDir, 'STATUS'), `${status}\n`);
+  writeFileSync(join(contractDir, 'REPORT.md'), report);
   process.stdout.write(JSON.stringify({ type: 'result', is_error: false, total_cost_usd: 0.12, num_turns: 7 }));
 }
 
@@ -76,8 +76,8 @@ switch (scenario) {
   case 'tamper-config': {
     // Points its remote at a decoy and plants an fsmonitor command, hoping the orchestrator uses them.
     commit('feature.txt', 'ok\n');
-    git('remote', 'add', 'origin', join(runDir, 'decoy.git'));
-    git('config', 'core.fsmonitor', `touch ${join(runDir, 'FSMONITOR_RAN')}`);
+    git('remote', 'add', 'origin', join(contractDir, 'decoy.git'));
+    git('config', 'core.fsmonitor', `touch ${join(contractDir, 'FSMONITOR_RAN')}`);
     finish('implemented', 'Feito.');
     break;
   }
@@ -87,7 +87,7 @@ switch (scenario) {
     for (const hook of ['post-checkout', 'pre-push', 'reference-transaction']) {
       mkdirSync(join('.git', 'hooks'), { recursive: true });
       const file = join('.git', 'hooks', hook);
-      writeFileSync(file, `#!/bin/sh\necho ${hook} >> "${join(runDir, 'HOOK_RAN')}"\n`);
+      writeFileSync(file, `#!/bin/sh\necho ${hook} >> "${join(contractDir, 'HOOK_RAN')}"\n`);
       chmodSync(file, 0o755);
     }
     finish('implemented', 'Feito.');

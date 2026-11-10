@@ -42,13 +42,27 @@ export function runnerPaths(workDir: string) {
   };
 }
 
+/**
+ * Audit files are always created anew: 'wx' (O_CREAT | O_EXCL) never follows a symlink, so
+ * one planted where an audit file goes cannot redirect the orchestrator's write elsewhere.
+ */
+async function writeAudit(path: string, content: string): Promise<void> {
+  await rm(path, { force: true });
+  await writeFile(path, content, { encoding: 'utf8', flag: 'wx' });
+}
+
 async function writeJson(path: string, data: unknown): Promise<void> {
-  await writeFile(path, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  await writeAudit(path, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+/** The run directory's layout. The agent is granted only `contract` (to write) and `attachments` (to read). */
+export function runLayout(runDir: string) {
+  return { contract: join(runDir, 'contract'), attachments: join(runDir, 'attachments') };
 }
 
 /** Copies attachments into the run dir: the agent only ever sees the audited copies. */
 async function prepareRunDir(runDir: string, loaded: LoadedRequest): Promise<string[]> {
-  const attachmentsDir = join(runDir, 'attachments');
+  const attachmentsDir = runLayout(runDir).attachments;
   await mkdir(attachmentsDir, { recursive: true });
   await writeJson(join(runDir, 'request.json'), loaded.request);
   const copies: string[] = [];
@@ -137,23 +151,30 @@ async function execute(
     };
   }
 
+  const layout = runLayout(runDir);
   const prompt = buildPrompt({
     template: deps.playbook,
     request,
     branch,
     baseRef: `${config.remote}/${config.baseBranch}`,
-    runDir,
-    statusFile: join(runDir, STATUS_FILE),
-    reportFile: join(runDir, REPORT_FILE),
+    contractDir: layout.contract,
+    statusFile: join(layout.contract, STATUS_FILE),
+    reportFile: join(layout.contract, REPORT_FILE),
     attachments,
   });
-  await writeFile(join(runDir, 'prompt.md'), prompt, 'utf8');
+  await writeAudit(join(runDir, 'prompt.md'), prompt);
 
   const home = await freshHome(workspace, deps);
   deps.log(`[${request.id}] agent started on ${branch}`);
-  const run = await deps.agent.run({ workspace, runDir, prompt, home });
-  await writeFile(join(runDir, 'agent-output.json'), run.rawOutput, 'utf8');
-  await writeFile(join(runDir, 'agent-stderr.log'), run.rawStderr, 'utf8');
+  const run = await deps.agent.run({
+    workspace,
+    contractDir: layout.contract,
+    readDirs: [layout.attachments],
+    prompt,
+    home,
+  });
+  await writeAudit(join(runDir, 'agent-output.json'), run.rawOutput);
+  await writeAudit(join(runDir, 'agent-stderr.log'), run.rawStderr);
   deps.log(`[${request.id}] agent declared ${run.status} in ${(run.durationMs / 1000).toFixed(0)}s`);
 
   // The agent's HEAD is copied into the main clone once; every check below uses that SHA,
