@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, rm, stat } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { link, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 export interface Lock {
@@ -7,7 +8,7 @@ export interface Lock {
 
 export type IsAlive = (pid: number) => boolean;
 
-/** A lock file younger than this with no readable pid is assumed to be mid-creation. */
+/** A lock file younger than this with no readable pid is assumed to be mid-creation (e.g. an older version). */
 const FRESH_LOCK_MS = 10_000;
 /** A takeover guard older than this was left by a process that died mid-takeover. */
 const STALE_GUARD_MS = 60_000;
@@ -36,18 +37,22 @@ async function ageMs(file: string): Promise<number> {
     .catch(() => Number.POSITIVE_INFINITY);
 }
 
+/**
+ * Creates `file` with `content` only if it does not exist. The content is written to a
+ * temporary file first and hard-linked into place, which is atomic: the file never exists
+ * empty, so a crash during creation cannot leave a lock without an owner pid.
+ */
 async function createExclusive(file: string, content: string): Promise<boolean> {
+  const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+  await writeFile(temp, content, 'utf8');
   try {
-    const handle = await open(file, 'wx');
-    try {
-      await handle.writeFile(content, 'utf8');
-    } finally {
-      await handle.close();
-    }
+    await link(temp, file);
     return true;
   } catch (error) {
     if (isErrno(error, 'EEXIST')) return false;
     throw error;
+  } finally {
+    await rm(temp, { force: true });
   }
 }
 

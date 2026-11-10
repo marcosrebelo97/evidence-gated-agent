@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { acquireLock } from '../src/state/lock.js';
 
@@ -57,6 +57,14 @@ describe('acquireLock', () => {
       expect(locks.filter((lock) => lock !== null)).toHaveLength(1);
       await Promise.all(locks.map((lock) => lock?.release()));
     }
+  });
+
+  it('creates the lock already holding its pid, leaving no temporary files behind', async () => {
+    const locks = await Promise.all(Array.from({ length: 8 }, () => acquireLock(file, () => true)));
+    expect(locks.filter((lock) => lock !== null)).toHaveLength(1);
+    expect(await readFile(file, 'utf8')).toBe(String(process.pid));
+    expect(await readdir(dirname(file))).toEqual(['poll.lock']);
+    await Promise.all(locks.map((lock) => lock?.release()));
   });
 
   it('does not steal a lock that is still being created', async () => {
