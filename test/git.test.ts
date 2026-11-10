@@ -113,6 +113,7 @@ describe('workspace (real git)', () => {
 describe('the agent cannot reach the orchestrator through git', () => {
   it('never runs hooks the agent planted in its workspace', async () => {
     const marker = join(fixture.root, 'hook-ran');
+    await mkdir(join(workspace, '.git', 'hooks'), { recursive: true });
     for (const hook of ['post-checkout', 'pre-push', 'reference-transaction', 'post-merge']) {
       await writeFile(join(workspace, '.git', 'hooks', hook), `#!/bin/sh\necho ${hook} >> "${marker}"\n`);
       await chmod(join(workspace, '.git', 'hooks', hook), 0o755);
@@ -147,6 +148,45 @@ describe('the agent cannot reach the orchestrator through git', () => {
     expect(remoteBranches(decoy)).toEqual([]);
     expect(existsSync(marker)).toBe(false);
     expect(await readFile(join(fixture.clone, '.git', 'config'), 'utf8')).toBe(before);
+  });
+
+  it('a filter the agent planted runs unprivileged, with a throwaway HOME', async () => {
+    const marker = join(fixture.root, 'filter-home');
+    await writeFile(join(workspace, '.gitattributes'), '*.txt filter=x\n');
+    await commitFile(workspace, 'data.txt', 'aaaa\n');
+    git(workspace, 'add', '.gitattributes');
+    git(workspace, 'commit', '--quiet', '-m', 'attributes');
+    git(workspace, 'config', 'filter.x.clean', `sh -c 'echo "$HOME" >> "${marker}"; cat'`);
+    // Same size, new content: git has to run the clean filter to know whether it changed.
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    await writeFile(join(workspace, 'data.txt'), 'bbbb\n');
+
+    expect(await ops.dirtyFiles(workspace)).toEqual(['data.txt']);
+    const homes = (await readFile(marker, 'utf8')).trim().split('\n');
+    expect(homes.length).toBeGreaterThan(0);
+    for (const home of homes) {
+      expect(home).toContain('ega-git-home-');
+      expect(existsSync(home)).toBe(false);
+    }
+  });
+
+  it("never copies the user's template hooks into a repository the agent works in", async () => {
+    const template = join(fixture.root, 'template');
+    await mkdir(join(template, 'hooks'), { recursive: true });
+    await writeFile(join(template, 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n');
+    await chmod(join(template, 'hooks', 'pre-commit'), 0o755);
+    const globalConfig = join(fixture.root, 'user.gitconfig');
+    await writeFile(globalConfig, `[init]\n\ttemplateDir = ${template}\n`);
+
+    const previous = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = globalConfig;
+    try {
+      await ops.createWorkspace(workspace, branch);
+    } finally {
+      if (previous === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = previous;
+    }
+    expect(existsSync(join(workspace, '.git', 'hooks', 'pre-commit'))).toBe(false);
   });
 
   it('runs git inside the workspace only with the sandboxed environment', async () => {
@@ -195,11 +235,24 @@ describe('verification and push (real git)', () => {
     git(fixture.root, 'init', '--quiet', '--bare', mirror);
     git(fixture.clone, 'remote', 'set-url', '--add', '--push', 'origin', fixture.remote);
     git(fixture.clone, 'remote', 'set-url', '--add', '--push', 'origin', mirror);
+    await ops.fetch();
     const sha = await commitFile(workspace, 'feature.ts');
     await ops.collect(workspace, 'REQ-1');
     await ops.push(sha, branch);
     expect(remoteBranches(fixture.remote)).toContain(branch);
     expect(remoteBranches(mirror)).toEqual([branch]);
+  });
+
+  it('refuses to push when the push URLs changed after fetch', async () => {
+    const decoy = join(fixture.root, 'decoy.git');
+    git(fixture.root, 'init', '--quiet', '--bare', decoy);
+    const sha = await commitFile(workspace, 'feature.ts');
+    await ops.collect(workspace, 'REQ-1');
+    // Same effect as a pushInsteadOf rule planted in the user's ~/.gitconfig.
+    git(fixture.clone, 'config', `url.${decoy}.pushInsteadOf`, fixture.remote);
+    await expect(ops.push(sha, branch)).rejects.toThrow(/push URLs of "origin" changed/);
+    expect(remoteBranches(decoy)).toEqual([]);
+    expect(remoteBranches(fixture.remote)).toEqual(['main']);
   });
 
   it('refuses to push or branch on the base branch', async () => {

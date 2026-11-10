@@ -1,4 +1,6 @@
-import { rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Exec } from './exec.js';
 import { sandboxEnv } from './sandbox.js';
 
@@ -26,7 +28,10 @@ export interface GitOps {
   dirtyFiles(workspace: string): Promise<string[]>;
   /** A new repository with only `commit` checked out: what the gates verify is exactly what gets pushed. */
   createVerification(path: string, commit: string): Promise<void>;
-  /** Pushes an exact commit to the agent branch. Never forced, never to the base. */
+  /**
+   * Pushes an exact commit to the agent branch, at every push URL recorded by fetch().
+   * Never forced, never to the base.
+   */
   push(commit: string, branch: string): Promise<void>;
 }
 
@@ -68,6 +73,7 @@ export const CANDIDATE_REFS = 'refs/evidence-gated-agent';
 export function createGit(exec: Exec, settings: GitSettings): GitOps {
   const baseRef = `refs/remotes/${settings.remote}/${settings.baseBranch}`;
   let baseSha: string | undefined;
+  let pushUrls: string[] | undefined;
 
   const run = async (cwd: string, args: string[], env?: Record<string, string>): Promise<string> => {
     const result = await exec('git', [...SAFE_GIT, ...args], {
@@ -80,8 +86,20 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
   };
   const inRepo = (args: string[]) => run(settings.repoPath, args);
   /** For git inside a directory whose content the agent wrote: no user or system git config either. */
-  const untrusted = () =>
-    sandboxEnv({ remote: settings.remote, extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  const untrusted = async <T>(fn: (env: Record<string, string>) => Promise<T>): Promise<T> => {
+    // A throwaway HOME too: a filter planted in the agent's config must not reach the user's dotfiles.
+    const home = await mkdtemp(join(tmpdir(), 'ega-git-home-'));
+    try {
+      return await fn(
+        sandboxEnv({ remote: settings.remote, home, extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  };
+  /** Push URLs of the remote, after any insteadOf rewriting: exactly where a push would go. */
+  const pushUrlsNow = async (): Promise<string[]> =>
+    (await inRepo(['remote', 'get-url', '--push', '--all', settings.remote])).split('\n').filter(Boolean);
   const base = (): string => {
     if (!baseSha) throw new Error('base unknown: fetch() must run first');
     return baseSha;
@@ -90,7 +108,8 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
   /** A new repository at `path` with `commit` fetched from the main clone. Nothing of the agent's is in it yet. */
   const freshRepository = async (path: string, commit: string): Promise<void> => {
     await rm(path, { recursive: true, force: true });
-    await run(settings.repoPath, ['init', '--quiet', path]);
+    // --template=: none of the user's template hooks end up in a repository the agent works in.
+    await run(settings.repoPath, ['init', '--quiet', '--template=', path]);
     await run(path, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', settings.repoPath, commit]);
   };
 
@@ -98,6 +117,7 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
     async fetch() {
       await inRepo(['fetch', '--quiet', settings.remote, settings.baseBranch]);
       baseSha = (await inRepo(['rev-parse', '--verify', `${baseRef}^{commit}`])).trim();
+      pushUrls = await pushUrlsNow();
       return baseSha;
     },
 
@@ -136,7 +156,7 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
     async dirtyFiles(workspace) {
       // The workspace is the agent's: its config can run filters. Same environment as the agent, nothing more.
       const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'];
-      const output = await run(workspace, args, untrusted());
+      const output = await untrusted((env) => run(workspace, args, env));
       return nulSeparated(output).map((entry) => entry.slice(3));
     },
 
@@ -145,13 +165,22 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       await freshRepository(path, commit);
       // The commit's .gitattributes could select a filter from the user's git config (git-lfs, with
       // its credentials): check out unprivileged and without that config.
-      await run(path, ['checkout', '--quiet', '--detach', commit], untrusted());
+      await untrusted((env) => run(path, ['checkout', '--quiet', '--detach', commit], env));
     },
 
     async push(commit, branch) {
       if (branch === settings.baseBranch) throw new Error('refusing to push to the base branch');
       assertSha(commit);
-      await inRepo(['push', '--quiet', '--no-verify', settings.remote, `${commit}:refs/heads/${branch}`]);
+      if (!pushUrls) throw new Error('push URLs unknown: fetch() must run first');
+      // Only where the remote pointed before the agent ran. If its URLs (or an insteadOf rule in the
+      // user's config) changed during the run, something rewrote the configuration: refuse.
+      const now = await pushUrlsNow();
+      if (now.join('\n') !== pushUrls.join('\n')) {
+        throw new Error(`push URLs of "${settings.remote}" changed during the run; refusing to push`);
+      }
+      for (const url of pushUrls) {
+        await inRepo(['push', '--quiet', '--no-verify', url, `${commit}:refs/heads/${branch}`]);
+      }
     },
   };
 }

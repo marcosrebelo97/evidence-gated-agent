@@ -1,7 +1,7 @@
 // Stands in for `claude -p` in end-to-end tests.
 // Usage: node fake-agent.mjs <scenario> [claude flags...] --add-dir <runDir>  (prompt on stdin)
 import { execFileSync } from 'node:child_process';
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -85,6 +85,7 @@ switch (scenario) {
     // Hooks that would run on the orchestrator's git commands, if it ran any in this repository.
     commit('feature.txt', 'ok\n');
     for (const hook of ['post-checkout', 'pre-push', 'reference-transaction']) {
+      mkdirSync(join('.git', 'hooks'), { recursive: true });
       const file = join('.git', 'hooks', hook);
       writeFileSync(file, `#!/bin/sh\necho ${hook} >> "${join(runDir, 'HOOK_RAN')}"\n`);
       chmodSync(file, 0o755);
