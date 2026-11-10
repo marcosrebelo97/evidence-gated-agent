@@ -274,7 +274,57 @@ mensagem do próprio Claude Code, e a falha segue o caminho normal de
 **Limite assumido:** o agente roda com o mesmo usuário do poll. Um script dele
 ainda pode escrever por caminho absoluto num arquivo desse usuário. O que este
 projeto fecha são os caminhos a partir de onde o agente trabalha; o resto é
-papel do usuário dedicado ou do container.
+papel do usuário dedicado ou do container (decisão 19).
+
+## 19. Modo container: cada comando não confiável num container novo
+
+`isolation.mode = "container"` roda o agente, o setup e os gates sobre o
+commit dele e todo git dentro do repositório dele com `docker run`, um
+container por comando. O padrão continua `none`.
+
+**Por quê:** as decisões 16 a 18 fecham os caminhos que o agente tem a partir
+de onde trabalha; sobrava o caminho absoluto, com o mesmo usuário. No
+container, o clone principal, o `HOME` do usuário, o ledger e a auditoria não
+existem: não há caminho para eles.
+
+**Como:**
+
+- A interface `Isolation` (`exec` com `mounts` e `network`) veio antes do
+  container. Cada chamada declara o que precisa; o modo `none` ignora a
+  declaração, o modo container a aplica. Assim o pipeline é o mesmo nos dois
+  modos, e um teste garante que nenhum git do orquestrador roda dentro do
+  repositório do agente fora dela.
+- Mounts nos mesmos caminhos do host: prompt, `--add-dir`, `HOME` e a saída do
+  git valem dentro e fora sem tradução de caminho.
+- Usuário do host (`--user uid:gid`), para que os arquivos criados no
+  container continuem do usuário do poll, sem `chown` nem root. Sem entrada no
+  `/etc/passwd` da imagem, o `os.userInfo()` do Node falha: o orquestrador
+  monta passwd e group mínimos, só leitura. Rodar o poll como root é recusado.
+- `--cap-drop ALL`, `no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs,
+  limites de memória e de processos, `--pull never` (a imagem é a que foi
+  construída e revisada, nunca a que o registry tiver agora) e entrypoint
+  vazio.
+- Segredos por referência (`-e NOME`, com o valor no ambiente do CLI do
+  docker), para não aparecerem no `ps`. `PATH`, `SHELL`, `TMPDIR` e caminhos de
+  CA são do host e ficam fora.
+- Rede por papel; `host` é recusada (daria acesso ao `localhost` do host). Os
+  gates começam sem rede; o git no repositório do agente nunca tem rede.
+- Matar o CLI do docker não para o container: o orquestrador faz `docker rm -f`
+  depois de todo comando e, no sinal, remove os que estiverem ativos.
+
+**Ficou no host:** o setup confiável sobre a base intacta (pode precisar das
+chaves do usuário) e o checkout da verificação, que roda num repositório novo
+do orquestrador, sem nenhum filtro definido.
+
+**Tentativa descartada:** `bubblewrap`, mais leve que o Docker, não sobe no
+Ubuntu 24.04 por causa da restrição do AppArmor a user namespaces sem
+privilégio. Exigir que o usuário mude uma política de segurança do sistema
+para usar o projeto seria pior que depender do Docker.
+
+**Limites assumidos:** o kernel é compartilhado (para código hostil de verdade,
+VM ou gVisor); quem está no grupo `docker` equivale a root no host — o poll já
+tem esse poder, o agente não vê o socket; o agente tem rede para a API e pode
+mandar para fora o que enxerga, o que se restringe com uma rede docker própria.
 
 ## O que decidi não fazer (por enquanto)
 

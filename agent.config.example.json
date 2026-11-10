@@ -6,6 +6,7 @@
   "inboxDir": "./examples/inbox",
   "forbiddenPaths": [".env", ".env.*", "**/*.pem", "**/*.key", "**/secrets/**"],
   "isolateHome": true,
+  "isolation": { "mode": "none" },
   "setup": [{ "name": "install", "command": "npm", "args": ["ci"], "timeoutMs": 600000 }],
   "agent": {
     "command": "claude",

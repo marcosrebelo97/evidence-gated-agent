@@ -40,6 +40,11 @@ agente com evidência objetiva — nunca a IA.**
    Evidência, verificação e push saem da `Baseline` (SHA da base e push URLs,
    anotados no `fetch`) e do SHA coletado; o push é recusado se os URLs
    mudaram. Só o setup sobre a base intacta usa o `HOME` do usuário.
+10. **Modo container**: com `isolation.mode = "container"`, o código não
+    confiável só enxerga os mounts declarados. `containerArgs` mantém
+    `--cap-drop ALL`, `no-new-privileges`, `--read-only`, `--pull never`,
+    usuário não root, segredos por referência e nunca a rede `host`; o
+    container é removido depois de todo comando.
 
 ## Stack
 
@@ -66,7 +71,8 @@ testável com fakes e o e2e rode com git real e um agente falso.
 
 ```bash
 npm run check        # typecheck + testes (rodar antes de todo commit)
-npm test             # vitest
+npm test             # vitest (hermético, sem Docker)
+npm run test:container  # modo container com Docker real (opt-in)
 npm run poll         # uma passada do orquestrador (agendar no cron)
 npm run status       # estado do ledger
 npm run retry <id>   # libera uma solicitação para nova tentativa

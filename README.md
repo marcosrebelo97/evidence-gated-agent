@@ -115,7 +115,7 @@ destacados na notificação para o revisor (`attentionPaths`).
   código confiável e mantém o `HOME` do usuário (chaves SSH, tokens de
   registry). O git lá dentro roda com `protocol.allow=never`, o que barra
   o `git push` do agente; um script escrito por ele pode desfazer essa variável,
-  e contra isso vale o isolamento de sistema (abaixo).
+  e contra isso vale o modo container (abaixo).
 - **Nada do repositório do agente executa do lado do orquestrador**: o agente
   trabalha num repositório próprio, não num worktree — hooks, config, refs e o
   ponteiro `.git` dele não são os do clone principal. Todo git que roda lá
@@ -160,16 +160,50 @@ destacados na notificação para o revisor (`attentionPaths`).
 - **Identidade do agente**: os commits do agente saem com um autor próprio
   (`agent.gitAuthor`), separando o trabalho dele do humano no histórico.
 
-### O que o sandbox não cobre
+### Isolamento: `none` ou `container`
 
 O sandbox e o repositório próprio fecham os caminhos que o agente tem a partir
-do lugar onde trabalha. Não substituem isolamento de sistema operacional: o
-agente roda com o mesmo usuário do poll e um script dele ainda pode escrever,
-por caminho absoluto, em qualquer arquivo desse usuário — inclusive no clone
-principal. Em produção:
+do lugar onde trabalha. Com `"isolation": { "mode": "none" }` (o padrão), o
+agente ainda roda no host, com o mesmo usuário do poll: um script dele pode
+escrever, por caminho absoluto, em qualquer arquivo desse usuário — inclusive
+no clone principal.
 
-- rode o poll com um **usuário dedicado** (ou container), sem chaves além das
-  necessárias;
+Com `"isolation": { "mode": "container" }`, cada comando não confiável roda num
+container novo (`docker run`): o agente, o setup e os gates sobre o commit dele
+e todo git dentro do repositório dele. Cada um enxerga só o que declarou:
+
+| Quem | Monta (mesmo caminho do host) | Rede |
+|---|---|---|
+| agente | repositório dele, `contract/`, `attachments/` (só leitura), `HOME` descartável | `network.agent` (padrão `bridge`: precisa da API) |
+| setup e gates da verificação | repositório da verificação, `HOME` descartável | `network.setup` (`bridge`) e `network.gates` (`none`) |
+| git no repositório do agente (`rev-parse`, `status`, `bundle`) | o repositório, um `HOME` descartável e, para o bundle, uma pasta própria | sempre `none` |
+
+O container roda com o uid:gid do usuário, `--cap-drop ALL`,
+`no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs e limites de memória
+e de processos; a imagem é local (`--pull never`) e o entrypoint dela é
+ignorado. Segredos passam por referência (`-e NOME`), nunca na linha de
+comando; a rede `host` é recusada. O clone principal, o `HOME` do usuário, o
+ledger e a auditoria não existem dentro dele. Cada container é removido ao fim
+do comando, num timeout e se o poll for interrompido. A
+[suíte do container](test/container/container.test.ts) prova isso com Docker
+real: um agente que tenta escrever no `.git/config` do clone principal, num
+arquivo do host e em `/etc/passwd` recebe `ENOENT`, `ENOENT` e `EROFS`.
+
+O setup sobre a base intacta, antes do agente, continua no host (é código
+confiável e pode precisar das chaves do usuário). O que o container não cobre:
+
+- **o kernel é compartilhado**: uma falha de escape de container ou do kernel
+  passa por cima de tudo isso — para código hostil de verdade, use uma VM ou
+  um runtime como gVisor;
+- **o grupo `docker` equivale a root** no host: quem roda o poll já tem esse
+  poder, e o agente não (ele não vê o socket);
+- **o agente tem rede**, porque precisa da API: ele pode mandar para fora o que
+  enxerga — o repositório e os anexos. Restrinja a saída com uma rede docker
+  própria (proxy com allowlist) em `network.agent`.
+
+Em qualquer modo, em produção:
+
+- rode o poll com um **usuário dedicado**, sem chaves além das necessárias;
 - **proteja a branch base no servidor** (o orquestrador nunca a toca, mas a
   proteção não deve depender só dele);
 - mantenha o **CI** como gate final do PR — o agente pode alterar a definição
@@ -263,6 +297,24 @@ Agendamento (a cada 15 minutos; o lock impede passadas sobrepostas):
 */15 * * * * cd /opt/evidence-gated-agent && npm run poll >> poll.log 2>&1
 ```
 
+Modo container (Linux com Docker; o usuário do poll precisa estar no grupo
+`docker`). A imagem leva só ferramentas — git e o Claude Code numa versão
+fixa; acrescente nela o que os gates do projeto precisarem:
+
+```bash
+docker build -f docker/runner.Dockerfile -t evidence-gated-agent-runner docker/
+```
+
+```json
+"isolation": {
+  "mode": "container",
+  "image": "evidence-gated-agent-runner",
+  "network": { "agent": "bridge", "setup": "bridge", "gates": "none" },
+  "memory": "4g",
+  "pids": 1024
+}
+```
+
 Para notificar no Telegram, use `"notifier": { "type": "telegram", "chatId": "<id>" }`
 e defina `TELEGRAM_BOT_TOKEN` no ambiente — o token nunca vai no arquivo de
 configuração, e o agente não o recebe. O setup da verificação roda sobre o
@@ -277,7 +329,8 @@ aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
 ## Testes
 
 ```bash
-npm run check   # typecheck + 160 testes
+npm run check            # typecheck + 175 testes, sem Docker
+npm run test:container   # 4 testes de integração com Docker real (opt-in)
 ```
 
 - **Unitários** para cada peça: a função `decide` em todas as combinações, o
@@ -300,6 +353,11 @@ npm run check   # typecheck + 160 testes
   sozinho e ler segredos, um que deixa um arquivo ignorado para "ajudar" o
   gate, um que esconde um `.env` movendo a base, um que planta hooks e config,
   e o `HOME` isolado — sem gastar crédito de API.
+- **Modo container com Docker real** (`npm run test:container`, fora do
+  `npm test`): publicação com agente, gates e git em containers; tentativa de
+  escrever fora dos mounts; `REPORT.md` com symlink para uma chave do host; e
+  um agente que estoura o timeout sem deixar container para trás. Os
+  argumentos do `docker run` têm testes unitários próprios.
 
 ## Estrutura
 
@@ -309,6 +367,8 @@ src/
 ├── pipeline.ts     # orquestra um poll e um run
 ├── gates.ts        # gates + decide()
 ├── sandbox.ts      # ambiente do agente e dos gates
+├── isolation.ts    # onde o código não confiável roda (host ou container)
+├── container.ts    # docker run: mounts, usuário, rede, limites
 ├── agent/          # prompt a partir do roteiro + runner headless
 ├── git.ts          # repositórios do agente, coleta do SHA, evidência, push
 ├── scope.ts        # caminhos proibidos e de atenção, nome de branch
@@ -318,6 +378,7 @@ src/
 ├── exec.ts         # único ponto que cria processos
 └── config.ts · request.ts · deps.ts
 playbook/agent-playbook.md   # o roteiro que o agente segue
+docker/runner.Dockerfile     # imagem do modo container
 ```
 
 ## Limitações conhecidas e próximos passos
@@ -342,6 +403,11 @@ playbook/agent-playbook.md   # o roteiro que o agente segue
   do agente. Aponte o cache delas para dentro do projeto
   (`PLAYWRIGHT_BROWSERS_PATH=0`, `PUPPETEER_CACHE_DIR`, `CYPRESS_CACHE_FOLDER`)
   para que agente e verificação as encontrem.
+- No modo container, o setup confiável instala as dependências no host e o
+  agente as usa dentro da imagem: módulos nativos (`sharp`, `bcrypt`) podem
+  não carregar se a libc ou a versão do Node forem diferentes. Mantenha a
+  imagem com a mesma versão do Node do host. A verificação não sofre disso:
+  setup e gates rodam os dois no container.
 - Métricas que valem acompanhar: taxa de `published` aceito sem retrabalho na
   revisão, lead time da aprovação até a branch, apontamentos da revisão humana
   por entrega e taxa de `blocked` legítimo.

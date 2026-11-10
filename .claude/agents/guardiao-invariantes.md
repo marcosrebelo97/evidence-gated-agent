@@ -47,10 +47,18 @@ citando arquivo e linha quando enfraquecido:
    SHAs anotados? O push continua indo só para os URLs da `Baseline`? O `HOME`
    do agente e da verificação continua isolado por padrão, e só o setup sobre a
    base intacta usa o do usuário?
+10. **Modo container** — `containerArgs` perdeu alguma restrição
+    (`--cap-drop ALL`, `no-new-privileges`, `--read-only`, `--pull never`,
+    `--user` não root, entrypoint vazio)? Algum mount novo vai além do que o
+    comando precisa, ou um caminho entra sem `assertMountable`? Algum segredo
+    passou a ir na linha de comando (`-e NOME=valor`)? A rede `host` voltou a
+    ser aceita? Algum caminho deixou de remover o container?
 
 Depois verifique se cada comportamento novo tem teste (unitário em
-`test/*.test.ts` ou ponta a ponta em `test/e2e.test.ts`) e rode
-`npm run check`.
+`test/*.test.ts`, ponta a ponta em `test/e2e.test.ts` ou, para o modo
+container, em `test/container/`) e rode `npm run check` — e
+`npm run test:container` se o diff toca `container.ts`, `isolation.ts` ou a
+imagem.
 
 Termine com um veredito de uma linha: **pode commitar** ou **corrigir antes**,
 com a lista objetiva do que corrigir. Não proponha refatorações fora do escopo
