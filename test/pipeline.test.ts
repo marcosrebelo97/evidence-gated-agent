@@ -59,6 +59,17 @@ describe('pollOnce — publication', () => {
     expect(run).toMatchObject({ outcome: 'published', attention: ['package.json', 'vitest.config.ts'] });
   });
 
+  it('runs setup as trusted only on the untouched base, never on the agent commit', async () => {
+    const trusted: boolean[] = [];
+    h.deps.runSetup = async (_worktree, options) => {
+      trusted.push(options.trusted);
+      return [];
+    };
+    await h.addRequest(approved());
+    await pollOnce(h.deps);
+    expect(trusted).toEqual([true, false]);
+  });
+
   it('rejects when setup breaks in the verification worktree', async () => {
     let setupRuns = 0;
     h.deps.runSetup = async () => (++setupRuns === 2 ? [gate('install', false)] : []);

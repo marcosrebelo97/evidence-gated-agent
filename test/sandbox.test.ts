@@ -35,6 +35,21 @@ describe('sandboxEnv', () => {
     });
   });
 
+  it('passes proxy and CA settings, so the agent works behind a corporate proxy', () => {
+    const proxied = { ...source, HTTPS_PROXY: 'http://proxy:3128', no_proxy: 'localhost', NODE_EXTRA_CA_CERTS: '/ca.pem' };
+    expect(sandboxEnv({ remote: 'origin', source: proxied })).toMatchObject({
+      HTTPS_PROXY: 'http://proxy:3128',
+      no_proxy: 'localhost',
+      NODE_EXTRA_CA_CERTS: '/ca.pem',
+    });
+  });
+
+  it('keeps git transports for trusted setup, but still disables the push URL', () => {
+    const env = sandboxEnv({ remote: 'origin', allowGitTransport: true, source });
+    expect(env).toMatchObject({ GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'remote.origin.pushurl' });
+    expect(Object.values(env)).not.toContain('protocol.allow');
+  });
+
   it('with real git: local work still works, pushing does not', async () => {
     const fixture = await createGitFixture();
     const env = sandboxEnv({ remote: 'origin', extra: GIT_IDENTITY });

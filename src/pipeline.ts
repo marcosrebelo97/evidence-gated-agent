@@ -16,7 +16,11 @@ export interface PipelineDeps {
   source: RequestSource;
   git: GitOps;
   agent: AgentRunner;
-  runSetup: (worktree: string) => Promise<GateResult[]>;
+  /**
+   * `trusted`: the worktree holds only the untouched base (before the agent runs), so the
+   * setup may use git transports, e.g. for git dependencies. On the agent's commit it may not.
+   */
+  runSetup: (worktree: string, options: { trusted: boolean }) => Promise<GateResult[]>;
   runGates: (worktree: string) => Promise<GateResult[]>;
   notifier: Notifier;
   playbook: string;
@@ -69,7 +73,7 @@ async function verifyCommit(commit: string, id: string, deps: PipelineDeps): Pro
   const path = runnerPaths(deps.config.workDir).verification(id);
   await freshWorktree(deps.git, path, () => deps.git.createVerificationWorktree(path, commit));
   try {
-    const setup = await deps.runSetup(path);
+    const setup = await deps.runSetup(path, { trusted: false });
     const brokenSetup = setup.filter((step) => !step.passed);
     if (brokenSetup.length > 0) return brokenSetup.map((step) => ({ ...step, name: `setup:${step.name}` }));
     return await deps.runGates(path);
@@ -105,7 +109,8 @@ async function execute(
   await git.fetch();
   await freshWorktree(git, worktree, () => git.createWorktree(worktree, branch));
 
-  const setup = await deps.runSetup(worktree);
+  // Still only the base here: nothing of the agent's has run yet.
+  const setup = await deps.runSetup(worktree, { trusted: true });
   await writeJson(join(runDir, 'setup.json'), setup);
   const brokenSetup = setup.filter((step) => !step.passed);
   if (brokenSetup.length > 0) {
