@@ -33,7 +33,7 @@ export class FakeGit implements GitOps {
 
   async fetch() {
     this.check('fetch');
-    return FakeGit.BASE;
+    return { base: FakeGit.BASE, pushUrls: ['https://example.com/repo.git'] };
   }
   async createWorkspace(_path: string, branch: string) {
     this.check('createWorkspace', branch);

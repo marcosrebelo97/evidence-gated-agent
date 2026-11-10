@@ -4,15 +4,23 @@ import { join } from 'node:path';
 import type { Exec } from './exec.js';
 import { sandboxEnv } from './sandbox.js';
 
+/** What fetch() records before the agent runs. Every later step receives it explicitly. */
+export interface Baseline {
+  /** SHA of the remote base branch: all comparisons use it, never a ref. */
+  base: string;
+  /** Where the remote pushes to, after insteadOf rewriting. */
+  pushUrls: string[];
+}
+
 export interface GitOps {
-  /** Updates the remote base branch and records its SHA: every later comparison uses that SHA. */
-  fetch(): Promise<string>;
+  /** Updates the remote base branch and records the baseline. */
+  fetch(): Promise<Baseline>;
   /**
    * Creates the agent's workspace: a new, independent repository holding only the base
    * commit, on a fresh branch. It shares nothing with the main clone (no hooks, config,
    * refs or object store), so nothing the agent does in it reaches the orchestrator.
    */
-  createWorkspace(path: string, branch: string): Promise<void>;
+  createWorkspace(path: string, branch: string, base: string): Promise<void>;
   /** Deletes a workspace or verification directory. No git runs inside it. */
   removeWorkspace(path: string): Promise<void>;
   /**
@@ -25,19 +33,19 @@ export interface GitOps {
    * the objects of a rejected commit (one that touched .env, say) become prunable.
    */
   dropCandidate(id: string): Promise<void>;
-  /** Commits in `commit` that are not in the recorded base. */
-  commitsAhead(commit: string): Promise<number>;
-  /** Files changed by `commit` relative to the recorded base (renames as delete + add). */
-  changedFiles(commit: string): Promise<string[]>;
+  /** Commits in `commit` that are not in `base`. */
+  commitsAhead(base: string, commit: string): Promise<number>;
+  /** Files changed by `commit` relative to `base` (renames as delete + add). */
+  changedFiles(base: string, commit: string): Promise<string[]>;
   /** Uncommitted or untracked files left in the workspace. Runs with the agent's privileges. */
   dirtyFiles(workspace: string): Promise<string[]>;
   /** A new repository with only `commit` checked out: what the gates verify is exactly what gets pushed. */
   createVerification(path: string, commit: string): Promise<void>;
   /**
-   * Pushes an exact commit to the agent branch, at every push URL recorded by fetch().
+   * Pushes an exact commit to the agent branch, at every push URL of the baseline.
    * Never forced, never to the base.
    */
-  push(commit: string, branch: string): Promise<void>;
+  push(commit: string, branch: string, baseline: Baseline): Promise<void>;
 }
 
 export interface GitSettings {
@@ -63,6 +71,9 @@ const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'
 
 const FULL_SHA = /^[0-9a-f]{40,64}$/;
 
+/** Commits of base history copied into the agent's repository. */
+const WORKSPACE_HISTORY = 50;
+
 function assertSha(commit: string): void {
   if (!FULL_SHA.test(commit)) throw new Error(`not a full commit id: ${commit}`);
 }
@@ -77,8 +88,6 @@ export const CANDIDATE_REFS = 'refs/evidence-gated-agent';
 
 export function createGit(exec: Exec, settings: GitSettings): GitOps {
   const baseRef = `refs/remotes/${settings.remote}/${settings.baseBranch}`;
-  let baseSha: string | undefined;
-  let pushUrls: string[] | undefined;
 
   const run = async (cwd: string, args: string[], env?: Record<string, string>): Promise<string> => {
     const result = await exec('git', [...SAFE_GIT, ...args], {
@@ -105,34 +114,42 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
   /** Push URLs of the remote, after any insteadOf rewriting: exactly where a push would go. */
   const pushUrlsNow = async (): Promise<string[]> =>
     (await inRepo(['remote', 'get-url', '--push', '--all', settings.remote])).split('\n').filter(Boolean);
-  const base = (): string => {
-    if (!baseSha) throw new Error('base unknown: fetch() must run first');
-    return baseSha;
-  };
 
-  /** A new repository at `path` with `commit` fetched from the main clone. Nothing of the agent's is in it yet. */
-  const freshRepository = async (path: string, commit: string): Promise<void> => {
+  /**
+   * A new repository at `path` with `commit` fetched from the main clone, `depth` commits deep.
+   * Nothing of the agent's is in it yet.
+   */
+  const freshRepository = async (path: string, commit: string, depth: number): Promise<void> => {
     await rm(path, { recursive: true, force: true });
     // --template=: none of the user's template hooks end up in a repository the agent works in.
     await run(settings.repoPath, ['init', '--quiet', '--template=', path]);
-    await run(path, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', settings.repoPath, commit]);
+    await run(path, [
+      'fetch',
+      '--quiet',
+      '--no-tags',
+      '--no-write-fetch-head',
+      `--depth=${depth}`,
+      settings.repoPath,
+      commit,
+    ]);
   };
 
   return {
     async fetch() {
       await inRepo(['fetch', '--quiet', settings.remote, settings.baseBranch]);
-      baseSha = (await inRepo(['rev-parse', '--verify', `${baseRef}^{commit}`])).trim();
-      pushUrls = await pushUrlsNow();
-      return baseSha;
+      const base = (await inRepo(['rev-parse', '--verify', `${baseRef}^{commit}`])).trim();
+      return { base, pushUrls: await pushUrlsNow() };
     },
 
-    async createWorkspace(path, branch) {
+    async createWorkspace(path, branch, base) {
       if (branch === settings.baseBranch) throw new Error('refusing to use the base branch as agent branch');
-      const commit = base();
-      await freshRepository(path, commit);
+      assertSha(base);
+      // Recent history only: enough for the agent to follow the commit style, without copying the
+      // whole repository on every run.
+      await freshRepository(path, base, WORKSPACE_HISTORY);
       // The playbook diffs against <remote>/<base>; inside the workspace it is a plain local ref.
-      await run(path, ['update-ref', baseRef, commit]);
-      await run(path, ['checkout', '--quiet', '-b', branch, commit]);
+      await run(path, ['update-ref', baseRef, base]);
+      await run(path, ['checkout', '--quiet', '-b', branch, base]);
     },
 
     async removeWorkspace(path) {
@@ -151,15 +168,17 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       await inRepo(['update-ref', '-d', `${CANDIDATE_REFS}/${id}`]);
     },
 
-    async commitsAhead(commit) {
+    async commitsAhead(base, commit) {
+      assertSha(base);
       assertSha(commit);
-      return Number.parseInt((await inRepo(['rev-list', '--count', `${base()}..${commit}`])).trim(), 10);
+      return Number.parseInt((await inRepo(['rev-list', '--count', `${base}..${commit}`])).trim(), 10);
     },
 
-    async changedFiles(commit) {
+    async changedFiles(base, commit) {
+      assertSha(base);
       assertSha(commit);
       // --no-renames: a rename shows as delete + add, so the source path of a moved secret is still checked.
-      return nulSeparated(await inRepo(['diff', '--name-only', '-z', '--no-renames', `${base()}...${commit}`]));
+      return nulSeparated(await inRepo(['diff', '--name-only', '-z', '--no-renames', `${base}...${commit}`]));
     },
 
     async dirtyFiles(workspace) {
@@ -171,16 +190,16 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
 
     async createVerification(path, commit) {
       assertSha(commit);
-      await freshRepository(path, commit);
+      // The gates need the files, not the history.
+      await freshRepository(path, commit, 1);
       // The commit's .gitattributes could select a filter from the user's git config (git-lfs, with
       // its credentials): check out unprivileged and without that config.
       await untrusted((env) => run(path, ['checkout', '--quiet', '--detach', commit], env));
     },
 
-    async push(commit, branch) {
+    async push(commit, branch, { pushUrls }) {
       if (branch === settings.baseBranch) throw new Error('refusing to push to the base branch');
       assertSha(commit);
-      if (!pushUrls) throw new Error('push URLs unknown: fetch() must run first');
       // Only where the remote pointed before the agent ran. If its URLs (or an insteadOf rule in the
       // user's config) changed during the run, something rewrote the configuration: refuse.
       const now = await pushUrlsNow();

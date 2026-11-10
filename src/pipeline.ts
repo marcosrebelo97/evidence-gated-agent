@@ -120,9 +120,9 @@ async function execute(
 
   const attachments = await prepareRunDir(runDir, loaded);
 
-  const baseSha = await git.fetch();
+  const baseline = await git.fetch();
   // A previous attempt may have kept its workspace for inspection; this starts clean.
-  await git.createWorkspace(workspace, branch);
+  await git.createWorkspace(workspace, branch, baseline.base);
 
   // Still only the base here: nothing of the agent's has run yet, so the setup keeps the
   // user's HOME (SSH keys, registry tokens for private dependencies).
@@ -161,8 +161,8 @@ async function execute(
   // The agent's HEAD is copied into the main clone once; every check below uses that SHA,
   // compared against the base SHA recorded before the agent ran.
   const head = await git.collect(workspace, request.id);
-  const commitsAhead = await git.commitsAhead(head);
-  const changed = await git.changedFiles(head);
+  const commitsAhead = await git.commitsAhead(baseline.base, head);
+  const changed = await git.changedFiles(baseline.base, head);
   const preliminary = {
     declared: run.status,
     contractViolation: run.contractViolation,
@@ -182,7 +182,7 @@ async function execute(
   const decision = decide(evidence);
   await writeJson(join(runDir, 'evidence.json'), {
     ...evidence,
-    base: baseSha,
+    base: baseline.base,
     changedFiles: changed,
     attention,
     decision,
@@ -195,7 +195,7 @@ async function execute(
   }
   if (!config.push) return { ...result, outcome: 'ready', reasons: [], keepWorkspace: true };
 
-  await git.push(evidence.commit as string, branch);
+  await git.push(evidence.commit as string, branch, baseline);
   return { ...result, outcome: 'published', reasons: [], keepWorkspace: false };
 }
 
