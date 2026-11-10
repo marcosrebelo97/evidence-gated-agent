@@ -1,5 +1,9 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { containerArgs, type ContainerSettings, type ContainerUser } from '../src/container.js';
+import { containerArgs, containerIsolation, type ContainerIdentity, type ContainerSettings } from '../src/container.js';
+import type { Exec, ExecOptions, ExecResult } from '../src/exec.js';
 import type { IsolatedExecOptions } from '../src/isolation.js';
 import { sandboxEnv } from '../src/sandbox.js';
 
@@ -10,7 +14,13 @@ const settings: ContainerSettings = {
   memory: '4g',
   pids: 1024,
 };
-const user: ContainerUser = { uid: 1001, gid: 1001, passwdFile: '/tmp/id/passwd', groupFile: '/tmp/id/group' };
+const user: ContainerIdentity = {
+  uid: 1001,
+  gid: 1001,
+  passwdFile: '/tmp/id/passwd',
+  groupFile: '/tmp/id/group',
+  label: 'abc123',
+};
 
 const options = (overrides: Partial<IsolatedExecOptions> = {}): IsolatedExecOptions => ({
   cwd: '/work/ws',
@@ -43,7 +53,8 @@ describe('containerArgs', () => {
     expect(flag(args, '--user')).toBe('1001:1001');
     expect(flag(args, '--cap-drop')).toBe('ALL');
     expect(flag(args, '--security-opt')).toBe('no-new-privileges');
-    expect(flag(args, '--tmpfs')).toBe('/tmp:rw,nosuid,nodev');
+    expect(flag(args, '--tmpfs')).toBe('/tmp:rw,exec,nosuid,nodev');
+    expect(flag(args, '--label')).toBe('evidence-gated-agent.workdir=abc123');
     expect(flag(args, '--memory')).toBe('4g');
     expect(flag(args, '--pids-limit')).toBe('1024');
     expect(flag(args, '--workdir')).toBe('/work/ws');
@@ -82,7 +93,7 @@ describe('containerArgs', () => {
   it('passes secrets by reference and drops host-only variables', () => {
     const env = sandboxEnv({
       remote: 'origin',
-      passEnv: ['CLAUDE_CODE_OAUTH_TOKEN'],
+      passEnv: ['CLAUDE_CODE_OAUTH_TOKEN', 'GIT_TOKEN'],
       home: '/work/ws.home',
       source: {
         PATH: '/usr/bin',
@@ -91,6 +102,7 @@ describe('containerArgs', () => {
         LANG: 'pt_BR.UTF-8',
         HTTPS_PROXY: 'http://user:pass@proxy:3128',
         CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-secret',
+        GIT_TOKEN: 'ghp_secret',
         AWS_SECRET_ACCESS_KEY: 'not-allowlisted',
       },
     });
@@ -107,7 +119,9 @@ describe('containerArgs', () => {
     // By reference: the value never appears in the docker command line.
     expect(variables).toContain('CLAUDE_CODE_OAUTH_TOKEN');
     expect(variables).toContain('HTTPS_PROXY');
+    expect(variables).toContain('GIT_TOKEN');
     expect(args.join(' ')).not.toContain('sk-ant-oat-secret');
+    expect(args.join(' ')).not.toContain('ghp_secret');
     expect(args.join(' ')).not.toContain('user:pass');
     expect(variables.some((v) => /^(PATH|SHELL|TMPDIR)\b/.test(v))).toBe(false);
     expect(args.join(' ')).not.toContain('AWS_SECRET_ACCESS_KEY');
@@ -118,6 +132,7 @@ describe('containerArgs', () => {
       HOME: '/home/me',
       DOCKER_HOST: 'unix:///run/docker.sock',
       CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-secret',
+      GIT_TOKEN: 'ghp_secret',
       HTTPS_PROXY: 'http://user:pass@proxy:3128',
     });
   });
@@ -126,5 +141,52 @@ describe('containerArgs', () => {
     expect(() =>
       containerArgs('n', 'x', [], options({ env: { DOCKER_HOST: 'tcp://evil:2375' } }), settings, user, {}),
     ).toThrow('cannot pass DOCKER_HOST');
+  });
+
+  it('refuses an image that docker would read as an option', () => {
+    expect(() => containerArgs('n', 'x', [], options(), { ...settings, image: '--privileged' }, user, {})).toThrow(
+      'not a docker image reference',
+    );
+  });
+});
+
+describe('containerIsolation', () => {
+  const done: ExecResult = { code: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+
+  function fakeDocker(run: Partial<ExecResult>) {
+    const calls: string[][] = [];
+    const exec: Exec = async (_command, args, _options: ExecOptions) => {
+      calls.push([...args]);
+      if (args[0] === 'ps') return { ...done, stdout: 'stale1\nstale2\n' };
+      if (args[0] === 'run') return { ...done, ...run };
+      return done;
+    };
+    return { exec, calls };
+  }
+
+  it('prepares once per poll: checks the image, writes the identity, removes leftovers of a killed poll', async () => {
+    const identityDir = join(await mkdtemp(join(tmpdir(), 'ega-id-')), 'container');
+    const docker = fakeDocker({});
+    const isolation = containerIsolation(docker.exec, settings, { uid: 1001, gid: 1001, identityDir, label: 'abc123' });
+    await isolation.exec('git', ['status'], options({ network: 'none' }));
+    await isolation.exec('git', ['status'], options({ network: 'none' }));
+
+    expect(docker.calls.map((args) => args[0])).toEqual(['image', 'ps', 'rm', 'run', 'run']);
+    expect(docker.calls[1]).toEqual(['ps', '-aq', '--filter', 'label=evidence-gated-agent.workdir=abc123']);
+    expect(docker.calls[2]).toEqual(['rm', '-f', 'stale1', 'stale2']);
+    expect(await readFile(join(identityDir, 'passwd'), 'utf8')).toContain('ega:x:1001:1001:');
+  });
+
+  it('removes the container explicitly only when the CLI may have left it running', async () => {
+    const identityDir = join(await mkdtemp(join(tmpdir(), 'ega-id-')), 'container');
+    const host = { uid: 1001, gid: 1001, identityDir, label: 'abc123' };
+    const normal = fakeDocker({ code: 1 });
+    await containerIsolation(normal.exec, settings, host).exec('npm', ['test'], options());
+    expect(normal.calls.filter((args) => args[0] === 'rm' && args[2]?.startsWith('ega-'))).toEqual([]);
+
+    const timedOut = fakeDocker({ code: 143, timedOut: true });
+    await containerIsolation(timedOut.exec, settings, host).exec('npm', ['test'], options());
+    const name = flag(timedOut.calls.find((args) => args[0] === 'run') as string[], '--name');
+    expect(timedOut.calls.at(-1)).toEqual(['rm', '-f', name]);
   });
 });

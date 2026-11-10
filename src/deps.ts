@@ -4,7 +4,9 @@ import type { ResolvedConfig } from './config.js';
 import { exec } from './exec.js';
 import { runCommands } from './gates.js';
 import { createGit } from './git.js';
-import { assertImageExists, containerIsolation, createContainerUser } from './container.js';
+import { createHash } from 'node:crypto';
+import { join } from 'node:path';
+import { containerIsolation } from './container.js';
 import { hostIsolation, type Isolation } from './isolation.js';
 import { ConsoleNotifier, TelegramNotifier, type Notifier } from './notify.js';
 import type { PipelineDeps } from './pipeline.js';
@@ -34,8 +36,14 @@ async function createIsolation(config: ResolvedConfig, host: Isolation): Promise
   const getuid = process.getuid?.bind(process);
   const getgid = process.getgid?.bind(process);
   if (!getuid || !getgid) throw new Error('isolation "container" needs a POSIX host (uid/gid)');
-  await assertImageExists(exec, config.isolation);
-  return containerIsolation(exec, config.isolation, await createContainerUser(getuid(), getgid()));
+  if (getuid() === 0) throw new Error('isolation "container" refuses to run as root: run the orchestrator as a regular user');
+  // The image check and the identity files wait for the first container, under the poll lock.
+  return containerIsolation(exec, config.isolation, {
+    uid: getuid(),
+    gid: getgid(),
+    identityDir: join(config.workDir, 'container'),
+    label: createHash('sha256').update(config.workDir).digest('hex').slice(0, 16),
+  });
 }
 
 /** Wires the real implementations. Tests build PipelineDeps by hand instead. */

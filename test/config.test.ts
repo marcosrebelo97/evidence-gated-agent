@@ -75,6 +75,9 @@ describe('parseConfig', () => {
     const withNetwork = (gates: string) => ({ ...minimal, isolation: { mode: 'container', network: { gates } } });
     expect(() => parseConfig(withNetwork('host'), '/srv')).toThrow(/host network is not allowed/);
     expect(() => parseConfig(withNetwork('container:other'), '/srv')).toThrow(/docker network name/);
+    expect(() => parseConfig({ ...minimal, isolation: { mode: 'container', image: '-v=/:/host' } }, '/srv')).toThrow(
+      /docker image reference/,
+    );
     expect(() => parseConfig({ ...minimal, isolateHome: false, isolation: { mode: 'container' } }, '/srv')).toThrow(
       /requires isolateHome/,
     );

@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,6 +20,13 @@ const featureGate = {
   name: 'feature-check',
   command: 'node',
   args: ['-e', 'process.exit(require("fs").readFileSync("feature.txt","utf8")==="ok\\n"?0:1)'],
+};
+
+/** Native builds and unpacked tools execute from /tmp: it must not be noexec. */
+const tmpExecGate = {
+  name: 'tmp-exec',
+  command: 'sh',
+  args: ['-c', 'printf "#!/bin/sh\\nexit 0\\n" > /tmp/probe && chmod +x /tmp/probe && /tmp/probe'],
 };
 
 function containersLeft(): string {
@@ -57,7 +65,7 @@ async function setup(scenario: string, targets: string[] = [], agentTimeoutMs = 
         timeoutMs: agentTimeoutMs,
         gitAuthor: { name: 'support-agent', email: 'support-agent@example.com' },
       },
-      gates: [featureGate],
+      gates: [featureGate, tmpExecGate],
     },
     fixture.root,
   );
@@ -124,5 +132,15 @@ describe('isolation "container" (real docker)', () => {
     expect(report.processed[0]).toMatchObject({ outcome: 'failed', reasons: ['agent timed out after 3000 ms'] });
     expect(containersLeft()).toBe('');
     expect(existsSync(join(config.workDir, 'workspaces', 'REQ-1'))).toBe(true);
+  });
+
+  it('removes, on the next poll, a container that a killed poll left running', async () => {
+    const { config, deps } = await setup('implement');
+    const label = createHash('sha256').update(config.workDir).digest('hex').slice(0, 16);
+    execFileSync('docker', ['run', '-d', '--name', 'ega-orphan', '--label', `evidence-gated-agent.workdir=${label}`, IMAGE, 'sleep', '300']);
+    const report = await pollOnce(deps);
+
+    expect(report.processed[0]).toMatchObject({ outcome: 'published' });
+    expect(containersLeft()).toBe('');
   });
 });

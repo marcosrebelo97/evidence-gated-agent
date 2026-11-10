@@ -1,7 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Exec } from './exec.js';
 import type { Isolation, IsolatedExecOptions, NetworkRole } from './isolation.js';
@@ -16,38 +15,51 @@ export interface ContainerSettings {
 }
 
 /**
- * The host user, and passwd/group files that name it. Without an entry for its uid, Node's
- * os.userInfo() throws inside the container, and tools that ask for the user name fail.
+ * Who the containers run as, and what marks them. Without a passwd entry for its uid, Node's
+ * os.userInfo() throws inside the container, so minimal passwd/group files that name it are
+ * mounted read-only over the image's.
  */
-export interface ContainerUser {
+export interface ContainerIdentity {
   uid: number;
   gid: number;
   passwdFile: string;
   groupFile: string;
+  /** Value of the `evidence-gated-agent.workdir` label: finds containers a killed poll left behind. */
+  label: string;
 }
 
-/** Writes minimal passwd/group files for `uid:gid`, mounted read-only over the image's. */
-export async function createContainerUser(uid: number, gid: number): Promise<ContainerUser> {
+export const CONTAINER_LABEL = 'evidence-gated-agent.workdir';
+
+/** Docker image reference: never something docker would read as an option. */
+export const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
+
+/** Writes the passwd/group files into `dir` (under the workDir, replaced on every poll). */
+export async function writeIdentityFiles(dir: string, uid: number, gid: number): Promise<{ passwdFile: string; groupFile: string }> {
   if (uid === 0) throw new Error('isolation "container" refuses to run as root: run the orchestrator as a regular user');
-  const dir = await mkdtemp(join(tmpdir(), 'ega-identity-'));
+  await mkdir(dir, { recursive: true, mode: 0o700 });
   const passwdFile = join(dir, 'passwd');
   const groupFile = join(dir, 'group');
-  await writeFile(
-    passwdFile,
-    `root:x:0:0:root:/root:/usr/sbin/nologin\nega:x:${uid}:${gid}:evidence-gated-agent:/tmp:/usr/sbin/nologin\n`,
-    { mode: 0o644 },
-  );
-  await writeFile(groupFile, `root:x:0:\nega:x:${gid}:\n`, { mode: 0o644 });
-  return { uid, gid, passwdFile, groupFile };
+  const files: [string, string][] = [
+    [passwdFile, `root:x:0:0:root:/root:/usr/sbin/nologin\nega:x:${uid}:${gid}:evidence-gated-agent:/tmp:/usr/sbin/nologin\n`],
+    [groupFile, `root:x:0:\nega:x:${gid}:\n`],
+  ];
+  for (const [file, content] of files) {
+    await rm(file, { force: true });
+    await writeFile(file, content, { mode: 0o644, flag: 'wx' });
+  }
+  return { passwdFile, groupFile };
 }
 
 /**
- * Safe to put on the command line (`-e NAME=value`). Every other variable (tokens,
- * proxies that may carry credentials) goes by reference (`-e NAME`): docker reads its
- * value from its own environment, and it never shows up in `ps`.
+ * Safe to put on the command line (`-e NAME=value`): only the names the orchestrator sets
+ * itself, with values it chose. Every other variable (tokens, proxies that may carry
+ * credentials, a GIT_TOKEN in passEnv) goes by reference (`-e NAME`): docker reads its value
+ * from its own environment, and it never shows up in `ps`.
  */
 function isPlainVariable(name: string): boolean {
-  return /^(GIT_[A-Z0-9_]+|HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ)$/.test(name);
+  return /^(HOME|USER|LOGNAME|LANG|LANGUAGE|LC_[A-Z_]+|TERM|TZ|GIT_CONFIG_(COUNT|KEY_[0-9]+|VALUE_[0-9]+|GLOBAL|NOSYSTEM)|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL)|GIT_TERMINAL_PROMPT|GIT_NO_REPLACE_OBJECTS)$/.test(
+    name,
+  );
 }
 
 /**
@@ -82,7 +94,7 @@ export function containerArgs(
   args: readonly string[],
   options: IsolatedExecOptions,
   settings: ContainerSettings,
-  user: ContainerUser,
+  user: ContainerIdentity,
   hostEnv: NodeJS.ProcessEnv = process.env,
 ): ContainerInvocation {
   const network = options.network === 'none' ? 'none' : settings.network[options.network];
@@ -96,7 +108,9 @@ export function containerArgs(
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
     '--read-only',
-    '--tmpfs', '/tmp:rw,nosuid,nodev',
+    '--label', `${CONTAINER_LABEL}=${user.label}`,
+    // exec: docker defaults a tmpfs to noexec, which breaks native builds and tools unpacked in /tmp.
+    '--tmpfs', '/tmp:rw,exec,nosuid,nodev',
     '--memory', settings.memory,
     '--pids-limit', String(settings.pids),
     '--network', network,
@@ -130,6 +144,7 @@ export function containerArgs(
     }
   }
 
+  if (!IMAGE_REFERENCE.test(settings.image)) throw new Error(`not a docker image reference: ${JSON.stringify(settings.image)}`);
   dockerArgs.push(settings.image, command, ...args);
   return { args: dockerArgs, env };
 }
@@ -154,15 +169,41 @@ export function removeActiveContainers(): number {
   return names.length;
 }
 
-export function containerIsolation(exec: Exec, settings: ContainerSettings, user: ContainerUser): Isolation {
+export interface ContainerHost {
+  uid: number;
+  gid: number;
+  /** Where the identity files are written: a directory of the orchestrator's, under the workDir. */
+  identityDir: string;
+  label: string;
+}
+
+/**
+ * Runs each command in a fresh container. The first command of a poll (always under the
+ * poll lock) checks the image, writes the identity files and removes containers a killed
+ * poll of the same workDir left behind.
+ */
+export function containerIsolation(exec: Exec, settings: ContainerSettings, host: ContainerHost): Isolation {
+  let ready: Promise<ContainerIdentity> | undefined;
+  const prepare = async (): Promise<ContainerIdentity> => {
+    await assertImageExists(exec, settings);
+    const files = await writeIdentityFiles(host.identityDir, host.uid, host.gid);
+    await removeLabelledContainers(exec, settings, host.label);
+    return { uid: host.uid, gid: host.gid, label: host.label, ...files };
+  };
+
   return {
     mode: 'container',
     async exec(command, args, options) {
+      ready ??= prepare().catch((error: unknown) => {
+        ready = undefined;
+        throw error;
+      });
+      const identity = await ready;
       const name = `ega-${randomBytes(6).toString('hex')}`;
-      const invocation = containerArgs(name, command, args, options, settings, user);
+      const invocation = containerArgs(name, command, args, options, settings, identity);
       running.add(name);
       try {
-        return await exec(settings.engine, invocation.args, {
+        const result = await exec(settings.engine, invocation.args, {
           cwd: options.cwd,
           env: invocation.env,
           inheritEnv: false,
@@ -170,13 +211,29 @@ export function containerIsolation(exec: Exec, settings: ContainerSettings, user
           ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
           killGroupOnExit: true,
         });
+        // --rm removes a container that exited. On a timeout, or when docker itself failed (125+),
+        // the CLI may be gone while the container still runs: remove it explicitly.
+        if (result.timedOut || result.code >= 125) {
+          await exec(settings.engine, ['rm', '-f', name], { cwd: options.cwd, env: invocation.env, inheritEnv: false, timeoutMs: 60_000 });
+        }
+        return result;
       } finally {
-        // On a timeout the CLI is killed, not the container: remove it either way.
-        await exec(settings.engine, ['rm', '-f', name], { cwd: options.cwd, env: invocation.env, inheritEnv: false, timeoutMs: 60_000 });
         running.delete(name);
       }
     },
   };
+}
+
+/** Removes containers with this workDir's label: what a poll killed with SIGKILL left running. */
+async function removeLabelledContainers(exec: Exec, settings: ContainerSettings, label: string): Promise<void> {
+  const listed = await exec(settings.engine, ['ps', '-aq', '--filter', `label=${CONTAINER_LABEL}=${label}`], {
+    cwd: '/',
+    timeoutMs: 30_000,
+  });
+  const ids = listed.stdout.split('\n').filter(Boolean);
+  if (listed.code === 0 && ids.length > 0) {
+    await exec(settings.engine, ['rm', '-f', ...ids], { cwd: '/', timeoutMs: 60_000 });
+  }
 }
 
 /** Fails early, with a hint, when the image was not built: `--pull never` would only say "No such image". */

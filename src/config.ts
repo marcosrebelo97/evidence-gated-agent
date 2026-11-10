@@ -36,7 +36,10 @@ const isolationSchema = z
       mode: z.literal('container'),
       engine: z.literal('docker').default('docker'),
       /** Built locally from docker/runner.Dockerfile; never pulled during a run. */
-      image: z.string().min(1).default('evidence-gated-agent-runner'),
+      image: z
+        .string()
+        .regex(/^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/, 'image must be a docker image reference')
+        .default('evidence-gated-agent-runner'),
       network: z
         .object({
           /** The agent needs the Anthropic API. */
