@@ -118,12 +118,13 @@ destacados na notificação para o revisor (`attentionPaths`).
   e contra isso vale o isolamento de sistema (abaixo).
 - **Nada do repositório do agente executa do lado do orquestrador**: o agente
   trabalha num repositório próprio, não num worktree — hooks, config, refs e o
-  ponteiro `.git` dele não são os do clone principal. O orquestrador traz o
-  commit com `git fetch` (o `upload-pack` não executa a config nem os hooks do
-  repositório servido) e, quando precisa rodar git lá dentro (`status`, o
-  checkout da verificação), usa o ambiente do sandbox, um `HOME` descartável e
-  nenhuma config global — um filtro plantado pelo agente roda sem privilégio e
-  não alcança os dotfiles do usuário. Repositórios novos nascem sem os hooks de
+  ponteiro `.git` dele não são os do clone principal. Todo git que roda lá
+  dentro (`rev-parse`, `status`, o `bundle` dos commits novos) passa pela
+  mesma isolação do agente, sem rede, com um `HOME` descartável e nenhuma
+  config global — um filtro plantado pelo agente roda sem privilégio e não
+  alcança os dotfiles do usuário. O clone principal só recebe o bundle, com
+  `transfer.fsckObjects`; o checkout da verificação roda num repositório novo,
+  do orquestrador, com o mesmo ambiente restrito. Repositórios novos nascem sem os hooks de
   template do usuário. Os comandos git do orquestrador rodam sem hooks e sem
   fsmonitor.
 - **Push só para onde o remote apontava**: o `fetch` anota os push URLs do

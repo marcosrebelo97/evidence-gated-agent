@@ -1,7 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Exec } from './exec.js';
+import { hostIsolation, type Isolation, type Mount } from './isolation.js';
 import { sandboxEnv } from './sandbox.js';
 
 /** What fetch() records before the agent runs. Every later step receives it explicitly. */
@@ -26,8 +27,10 @@ export interface GitOps {
   /**
    * Brings the agent's HEAD into the main clone, under a private ref, and returns its SHA.
    * From here on, the evidence, the verification and the push all use this SHA.
+   * No git of the orchestrator's runs inside the workspace: the new commits come out as a
+   * bundle, written by git running with the agent's isolation.
    */
-  collect(workspace: string, id: string): Promise<string>;
+  collect(workspace: string, id: string, base: string): Promise<string>;
   /**
    * Deletes the private ref of a finished run. Its SHA stays in the ledger and the evidence;
    * the objects of a rejected commit (one that touched .env, say) become prunable.
@@ -37,7 +40,7 @@ export interface GitOps {
   commitsAhead(base: string, commit: string): Promise<number>;
   /** Files changed by `commit` relative to `base` (renames as delete + add). */
   changedFiles(base: string, commit: string): Promise<string[]>;
-  /** Uncommitted or untracked files left in the workspace. Runs with the agent's privileges. */
+  /** Uncommitted or untracked files left in the workspace. Runs with the agent's isolation. */
   dirtyFiles(workspace: string): Promise<string[]>;
   /** A new repository with only `commit` checked out: what the gates verify is exactly what gets pushed. */
   createVerification(path: string, commit: string): Promise<void>;
@@ -86,7 +89,11 @@ function nulSeparated(output: string): string[] {
 /** Private namespace in the main clone for commits collected from agent workspaces. */
 export const CANDIDATE_REFS = 'refs/evidence-gated-agent';
 
-export function createGit(exec: Exec, settings: GitSettings): GitOps {
+/**
+ * `isolation` runs every git command inside a directory the agent wrote (its workspace). The
+ * main clone and the verification repository are the orchestrator's: those run on the host.
+ */
+export function createGit(exec: Exec, settings: GitSettings, isolation: Isolation = hostIsolation(exec)): GitOps {
   const baseRef = `refs/remotes/${settings.remote}/${settings.baseBranch}`;
 
   const run = async (cwd: string, args: string[], env?: Record<string, string>): Promise<string> => {
@@ -99,17 +106,40 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
     return result.stdout;
   };
   const inRepo = (args: string[]) => run(settings.repoPath, args);
-  /** For git inside a directory whose content the agent wrote: no user or system git config either. */
-  const untrusted = async <T>(fn: (env: Record<string, string>) => Promise<T>): Promise<T> => {
-    // A throwaway HOME too: a filter planted in the agent's config must not reach the user's dotfiles.
+  /** The environment for git on content the agent wrote: no user or system git config either. */
+  const untrustedEnv = (home: string) =>
+    sandboxEnv({ remote: settings.remote, home, extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+  /** A throwaway HOME too: a filter planted in the agent's config must not reach the user's dotfiles. */
+  const withThrowawayHome = async <T>(fn: (home: string) => Promise<T>): Promise<T> => {
     const home = await mkdtemp(join(tmpdir(), 'ega-git-home-'));
     try {
-      return await fn(
-        sandboxEnv({ remote: settings.remote, home, extra: { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } }),
-      );
+      return await fn(home);
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  };
+  /** Git inside the agent's workspace, with the agent's isolation and no network. */
+  const inWorkspace = (workspace: string, args: string[], extraMounts: Mount[] = []): Promise<string> =>
+    withThrowawayHome(async (home) => {
+      const result = await isolation.exec('git', [...SAFE_GIT, ...args], {
+        cwd: workspace,
+        timeoutMs: GIT_TIMEOUT_MS,
+        env: untrustedEnv(home),
+        inheritEnv: false,
+        killGroupOnExit: true,
+        mounts: [{ path: workspace, writable: true }, { path: home, writable: true }, ...extraMounts],
+        network: 'none',
+      });
+      if (result.code !== 0) throw new GitError(args, result.code, result.stderr);
+      return result.stdout;
+    });
+  /** Whether the main clone already has `commit` (the base, or an ancestor of it). */
+  const hasCommit = async (commit: string): Promise<boolean> => {
+    const result = await exec('git', [...SAFE_GIT, 'cat-file', '-e', `${commit}^{commit}`], {
+      cwd: settings.repoPath,
+      timeoutMs: GIT_TIMEOUT_MS,
+    });
+    return result.code === 0;
   };
   /** Push URLs of the remote, after any insteadOf rewriting: exactly where a push would go. */
   const pushUrlsNow = async (): Promise<string[]> =>
@@ -156,12 +186,45 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       await rm(path, { recursive: true, force: true });
     },
 
-    async collect(workspace, id) {
+    async collect(workspace, id, base) {
+      assertSha(base);
       const ref = `${CANDIDATE_REFS}/${id}`;
-      // upload-pack is the side of git built to serve untrusted repositories: the workspace's
-      // config, hooks and attributes are not executed by this fetch.
-      await inRepo(['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', workspace, `+HEAD:${ref}`]);
-      return (await inRepo(['rev-parse', '--verify', `${ref}^{commit}`])).trim();
+      const head = (await inWorkspace(workspace, ['rev-parse', '--verify', 'HEAD^{commit}'])).trim();
+      assertSha(head);
+
+      if (await hasCommit(head)) {
+        // No new commit (or the agent moved HEAD back into the base's history): nothing to transfer.
+        await inRepo(['update-ref', ref, head]);
+      } else {
+        // The bundle goes to a directory of its own, outside the workspace, created now.
+        const outDir = `${workspace}.out`;
+        const bundle = join(outDir, 'head.bundle');
+        await rm(outDir, { recursive: true, force: true });
+        await mkdir(outDir, { mode: 0o700 });
+        try {
+          await inWorkspace(workspace, ['bundle', 'create', '--quiet', bundle, 'HEAD', `^${base}`], [
+            { path: outDir, writable: true },
+          ]);
+          if (!(await lstat(bundle)).isFile()) throw new Error('the agent bundle is not a regular file');
+          // fsckObjects: the bundle is untrusted input, so every object is checked as it is indexed.
+          await inRepo([
+            '-c',
+            'transfer.fsckObjects=true',
+            'fetch',
+            '--quiet',
+            '--no-tags',
+            '--no-write-fetch-head',
+            bundle,
+            `+HEAD:${ref}`,
+          ]);
+        } finally {
+          await rm(outDir, { recursive: true, force: true });
+        }
+      }
+
+      const collected = (await inRepo(['rev-parse', '--verify', `${ref}^{commit}`])).trim();
+      if (collected !== head) throw new Error(`collected ${collected}, but the agent's HEAD is ${head}`);
+      return collected;
     },
 
     async dropCandidate(id) {
@@ -184,7 +247,7 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
     async dirtyFiles(workspace) {
       // The workspace is the agent's: its config can run filters. Same environment as the agent, nothing more.
       const args = ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames'];
-      const output = await untrusted((env) => run(workspace, args, env));
+      const output = await inWorkspace(workspace, args);
       return nulSeparated(output).map((entry) => entry.slice(3));
     },
 
@@ -195,7 +258,8 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       await freshRepository(path, commit, WORKSPACE_HISTORY);
       // The commit's .gitattributes could select a filter from the user's git config (git-lfs, with
       // its credentials): check out unprivileged and without that config.
-      await untrusted((env) => run(path, ['checkout', '--quiet', '--detach', commit], env));
+      // It is the orchestrator's own new repository, so it runs on the host, with that environment.
+      await withThrowawayHome((home) => run(path, ['checkout', '--quiet', '--detach', commit], untrustedEnv(home)));
     },
 
     async push(commit, branch, { pushUrls }) {

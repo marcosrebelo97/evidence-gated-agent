@@ -41,7 +41,7 @@ export class FakeGit implements GitOps {
   async removeWorkspace(path: string) {
     this.check('removeWorkspace', path.split('/').pop());
   }
-  async collect(_workspace: string, id: string) {
+  async collect(_workspace: string, id: string, _base: string) {
     this.check('collect', id);
     return this.state.commitsAhead > 0 ? FakeGit.SHA : FakeGit.BASE;
   }

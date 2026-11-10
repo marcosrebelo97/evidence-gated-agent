@@ -32,9 +32,11 @@ agente com evidência objetiva — nunca a IA.**
 8. **`workDir` fora do alvo e do orquestrador**: senão o agente herda o
    `CLAUDE.md` errado.
 9. **Nada compartilhado com o agente**: ele trabalha num repositório próprio
-   (nunca um worktree) e num `HOME` vazio. O orquestrador só traz o commit dele
-   por `git fetch`; git dentro de diretório escrito pelo agente roda com o
-   ambiente do sandbox, um `HOME` descartável e `GIT_CONFIG_GLOBAL=/dev/null`.
+   (nunca um worktree) e num `HOME` vazio. Agente, gates e todo git dentro do
+   repositório dele passam por `Isolation` (`src/isolation.ts`), declarando
+   mounts e rede; o git roda sem rede, com um `HOME` descartável e
+   `GIT_CONFIG_GLOBAL=/dev/null`. O commit chega ao clone principal só como
+   bundle, com `transfer.fsckObjects`.
    Evidência, verificação e push saem da `Baseline` (SHA da base e push URLs,
    anotados no `fetch`) e do SHA coletado; o push é recusado se os URLs
    mudaram. Só o setup sobre a base intacta usa o `HOME` do usuário.

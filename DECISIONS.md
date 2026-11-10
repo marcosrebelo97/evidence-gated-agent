@@ -198,9 +198,15 @@ seguinte mostrou que cada medida tapava uma peça compartilhada e deixava outras
 abertas — refs, o ponteiro `.git`, um config somente leitura que a restauração
 não conseguia desfazer, um snapshot que só existia em memória. Separar os
 repositórios tira o estado compartilhado do caminho, e o mecanismo de
-snapshot deixou de existir. `upload-pack`, o lado do git que serve um `fetch`,
-é feito para repositórios não confiáveis e não executa a config nem os hooks
-de quem serve.
+snapshot deixou de existir.
+
+A coleta começou com `git fetch` do repositório do agente (`upload-pack` é
+feito para servir repositórios não confiáveis). Para o modo container, nem isso
+podia rodar no host: hoje o `git bundle create HEAD ^<base>` roda com a
+isolação do agente, sem rede, num diretório próprio fora do workspace; o host
+confere que o bundle é um arquivo regular e faz o `fetch` dele com
+`transfer.fsckObjects`. Se o HEAD já existe no clone principal (nenhum commit
+novo), não há bundle.
 
 O git que o orquestrador roda dentro desses diretórios recebe um `HOME`
 descartável, sem config global nem de sistema: um filtro que o agente plantou

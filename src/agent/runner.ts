@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { mkdir, open, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
-import type { Exec } from '../exec.js';
+import type { Isolation, Mount } from '../isolation.js';
 import { sandboxEnv } from '../sandbox.js';
 
 export const STATUS_FILE = 'STATUS';
@@ -122,7 +122,7 @@ async function readContractFile(path: string): Promise<ContractFile> {
  * contract directory (and the attachments, to read) are granted with --add-dir.
  * Anything outside the contract (crash, timeout, missing or invalid STATUS) becomes "failed".
  */
-export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): AgentRunner {
+export function createAgentRunner(isolation: Isolation, settings: AgentRunnerSettings): AgentRunner {
   return {
     async run({ workspace, contractDir, readDirs = [], prompt, home }) {
       const statusPath = join(contractDir, STATUS_FILE);
@@ -140,7 +140,15 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
       };
 
       const granted = [contractDir, ...readDirs].flatMap((dir) => ['--add-dir', dir]);
-      const result = await exec(settings.command, [...settings.args, ...granted], {
+      const mounts: Mount[] = [
+        { path: workspace, writable: true },
+        { path: contractDir, writable: true },
+        ...readDirs.map((path) => ({ path, writable: false })),
+        ...(home ? [{ path: home, writable: true }] : []),
+      ];
+      const result = await isolation.exec(settings.command, [...settings.args, ...granted], {
+        mounts,
+        network: 'agent',
         cwd: workspace,
         input: prompt,
         timeoutMs: settings.timeoutMs,

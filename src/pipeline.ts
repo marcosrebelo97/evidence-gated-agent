@@ -179,7 +179,7 @@ async function execute(
 
   // The agent's HEAD is copied into the main clone once; every check below uses that SHA,
   // compared against the base SHA recorded before the agent ran.
-  const head = await git.collect(workspace, request.id);
+  const head = await git.collect(workspace, request.id, baseline.base);
   const commitsAhead = await git.commitsAhead(baseline.base, head);
   const changed = await git.changedFiles(baseline.base, head);
   const preliminary = {

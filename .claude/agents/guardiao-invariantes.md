@@ -40,7 +40,9 @@ citando arquivo e linha quando enfraquecido:
    continua valendo?
 9. **Nada compartilhado** — algum caminho voltou a usar `git worktree` ou a
    rodar git com o ambiente do orquestrador dentro do repositório do agente ou
-   da verificação? Algum comando git novo deixou de passar por `SAFE_GIT`?
+   da verificação? Algum `exec` direto (fora de `Isolation`) passou a rodar
+   código do agente ou git no repositório dele? Algum comando git novo deixou
+   de passar por `SAFE_GIT`?
    Alguma evidência voltou a ler uma ref (`origin/main`, a branch) em vez dos
    SHAs anotados? O push continua indo só para os URLs da `Baseline`? O `HOME`
    do agente e da verificação continua isolado por padrão, e só o setup sobre a

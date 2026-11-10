@@ -1,9 +1,10 @@
 import { existsSync } from 'node:fs';
-import { chmod, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { exec, type Exec, type ExecOptions } from '../src/exec.js';
 import { CANDIDATE_REFS, createGit, type Baseline, type GitOps } from '../src/git.js';
+import { hostIsolation, type IsolatedExecOptions, type Isolation } from '../src/isolation.js';
 import { createGitFixture, git, remoteBranches, type GitFixture } from './helpers/git-fixture.js';
 
 let fixture: GitFixture;
@@ -53,7 +54,7 @@ describe('workspace (real git)', () => {
   });
 
   it('reports no evidence before the agent works', async () => {
-    const head = await ops.collect(workspace, 'REQ-1');
+    const head = await ops.collect(workspace, 'REQ-1', base);
     expect(head).toBe(base);
     expect(await ops.commitsAhead(base, head)).toBe(0);
     expect(await ops.dirtyFiles(workspace)).toEqual([]);
@@ -65,7 +66,7 @@ describe('workspace (real git)', () => {
     expect(await ops.dirtyFiles(workspace)).toEqual(['feature.ts']);
 
     commit(workspace, 'feature.ts');
-    const head = await ops.collect(workspace, 'REQ-1');
+    const head = await ops.collect(workspace, 'REQ-1', base);
     expect(git(fixture.clone, 'rev-parse', `${CANDIDATE_REFS}/REQ-1`).trim()).toBe(head);
     expect(await ops.commitsAhead(base, head)).toBe(1);
     expect(await ops.dirtyFiles(workspace)).toEqual([]);
@@ -81,7 +82,7 @@ describe('workspace (real git)', () => {
 
     git(workspace, 'mv', '.env.production', 'prod-settings.txt');
     git(workspace, 'commit', '--quiet', '-m', 'innocent rename');
-    const head = await ops.collect(workspace, 'REQ-1');
+    const head = await ops.collect(workspace, 'REQ-1', base);
     expect((await ops.changedFiles(base, head)).sort()).toEqual(['.env.production', 'prod-settings.txt']);
   });
 
@@ -90,12 +91,12 @@ describe('workspace (real git)', () => {
     await writeFile(join(workspace, 'configuração', '.env'), 'X=1\n');
     expect(await ops.dirtyFiles(workspace)).toEqual(['configuração/.env']);
     commit(workspace, 'configuração/.env');
-    expect(await ops.changedFiles(base, await ops.collect(workspace, 'REQ-1'))).toEqual(['configuração/.env']);
+    expect(await ops.changedFiles(base, await ops.collect(workspace, 'REQ-1', base))).toEqual(['configuração/.env']);
   });
 
   it('drops the private ref of a finished run', async () => {
     await commitFile(workspace, '.env', 'SECRET=1\n');
-    await ops.collect(workspace, 'REQ-1');
+    await ops.collect(workspace, 'REQ-1', base);
     await ops.dropCandidate('REQ-1');
     expect(git(fixture.clone, 'for-each-ref', CANDIDATE_REFS).trim()).toBe('');
   });
@@ -105,14 +106,14 @@ describe('workspace (real git)', () => {
     await commitFile(workspace, 'a.ts');
     git(workspace, 'update-ref', 'refs/remotes/origin/main', sneaky);
 
-    const head = await ops.collect(workspace, 'REQ-1');
+    const head = await ops.collect(workspace, 'REQ-1', base);
     expect(await ops.commitsAhead(base, head)).toBe(2);
     expect((await ops.changedFiles(base, head)).sort()).toEqual(['.env', 'a.ts']);
   });
 
   it('evidence comes from the collected SHA, not from wherever the branch is now', async () => {
     await commitFile(workspace, 'a.ts');
-    const sha = await ops.collect(workspace, 'REQ-1');
+    const sha = await ops.collect(workspace, 'REQ-1', base);
     await commitFile(workspace, '.env', 'X=1\n');
     expect(await ops.commitsAhead(base, sha)).toBe(1);
     expect(await ops.changedFiles(base, sha)).toEqual(['a.ts']);
@@ -132,7 +133,7 @@ describe('the agent cannot reach the orchestrator through git', () => {
     git(workspace, 'add', 'feature.ts');
     git(workspace, '-c', 'core.hooksPath=/dev/null', 'commit', '--quiet', '-m', 'feat: x');
 
-    const sha = await ops.collect(workspace, 'REQ-1');
+    const sha = await ops.collect(workspace, 'REQ-1', base);
     await ops.dirtyFiles(workspace);
     await ops.createVerification(join(fixture.root, 'verify'), sha);
     await ops.push(sha, branch, baseline);
@@ -150,7 +151,7 @@ describe('the agent cannot reach the orchestrator through git', () => {
     // Set last, so only the orchestrator's own git commands could trigger it.
     git(workspace, 'config', 'core.fsmonitor', `touch ${marker}`);
 
-    expect(await ops.collect(workspace, 'REQ-1')).toBe(sha);
+    expect(await ops.collect(workspace, 'REQ-1', base)).toBe(sha);
     await ops.dirtyFiles(workspace);
     await ops.push(sha, branch, baseline);
 
@@ -199,30 +200,80 @@ describe('the agent cannot reach the orchestrator through git', () => {
     expect(existsSync(join(workspace, '.git', 'hooks', 'pre-commit'))).toBe(false);
   });
 
-  it('runs git inside the workspace only with the sandboxed environment', async () => {
-    const calls: { args: readonly string[]; options: ExecOptions }[] = [];
+  it('runs git inside the workspace only through the isolation, without network or user config', async () => {
+    const onHost: ExecOptions[] = [];
     const spy: Exec = (command, args, options) => {
-      calls.push({ args, options });
+      onHost.push(options);
       return exec(command, args, options);
     };
-    const spied = createGit(spy, settings());
-    await spied.fetch();
-    await spied.collect(workspace, 'REQ-1');
+    const isolated: { args: readonly string[]; options: IsolatedExecOptions }[] = [];
+    const host = hostIsolation(exec);
+    const isolation: Isolation = {
+      mode: 'container',
+      exec: (command, args, options) => {
+        isolated.push({ args, options });
+        return host.exec(command, args, options);
+      },
+    };
+    const spied = createGit(spy, settings(), isolation);
+    await commitFile(workspace, 'feature.ts');
+    await spied.collect(workspace, 'REQ-1', base);
     await spied.dirtyFiles(workspace);
 
-    const insideWorkspace = calls.filter((call) => call.options.cwd === workspace);
-    expect(insideWorkspace).toHaveLength(1);
-    expect(insideWorkspace[0]?.args).toContain('status');
-    expect(insideWorkspace[0]?.options.inheritEnv).toBe(false);
-    // Nor the user's git config: a filter defined there (e.g. git-lfs) would act with the user's credentials.
-    expect(insideWorkspace[0]?.options.env).toMatchObject({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+    expect(onHost.filter((options) => options.cwd.startsWith(workspace))).toEqual([]);
+    expect(isolated.map(({ args }) => args.find((arg) => ['rev-parse', 'bundle', 'status'].includes(arg)))).toEqual([
+      'rev-parse',
+      'bundle',
+      'status',
+    ]);
+    for (const { options } of isolated) {
+      expect(options).toMatchObject({ cwd: workspace, network: 'none', inheritEnv: false });
+      expect(options.mounts[0]).toEqual({ path: workspace, writable: true });
+      // Nor the user's git config: a filter defined there (e.g. git-lfs) would act with the user's credentials.
+      expect(options.env).toMatchObject({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' });
+    }
+    // The bundle is the only thing written outside the workspace, in a directory of its own.
+    expect(isolated[1]?.options.mounts.at(-1)).toEqual({ path: `${workspace}.out`, writable: true });
+    expect(existsSync(`${workspace}.out`)).toBe(false);
+  });
+
+  it('refuses a bundle the agent replaced with a symlink', async () => {
+    await commitFile(workspace, 'feature.ts');
+    const host = hostIsolation(exec);
+    const tampering: Isolation = {
+      mode: 'none',
+      exec: async (command, args, options) => {
+        const result = await host.exec(command, args, options);
+        if (args.includes('bundle')) {
+          const bundle = join(`${workspace}.out`, 'head.bundle');
+          await rename(bundle, `${bundle}.real`);
+          await symlink(`${bundle}.real`, bundle);
+        }
+        return result;
+      },
+    };
+    await expect(createGit(exec, settings(), tampering).collect(workspace, 'REQ-1', base)).rejects.toThrow(
+      'the agent bundle is not a regular file',
+    );
+    expect(git(fixture.clone, 'for-each-ref', CANDIDATE_REFS).trim()).toBe('');
+  });
+
+  it('collects a HEAD moved back into the base history without a bundle', async () => {
+    git(fixture.clone, 'commit', '--quiet', '--allow-empty', '-m', 'second');
+    git(fixture.clone, 'push', '--quiet', 'origin', 'main');
+    const newBase = (await ops.fetch()).base;
+    await ops.createWorkspace(workspace, branch, newBase);
+    git(workspace, 'reset', '--quiet', '--hard', 'HEAD~1');
+    const head = await ops.collect(workspace, 'REQ-1', newBase);
+    expect(head).toBe(base);
+    expect(await ops.commitsAhead(newBase, head)).toBe(0);
   });
 });
 
 describe('verification and push (real git)', () => {
   it('creates an independent repository with only the exact commit checked out', async () => {
     const sha = await commitFile(workspace, 'feature.ts');
-    await ops.collect(workspace, 'REQ-1');
+    await ops.collect(workspace, 'REQ-1', base);
     const path = join(fixture.root, 'verify');
     await ops.createVerification(path, sha);
     expect(git(path, 'rev-parse', 'HEAD').trim()).toBe(sha);
@@ -233,7 +284,7 @@ describe('verification and push (real git)', () => {
 
   it('pushes the exact commit, even after the branch moved', async () => {
     await commitFile(workspace, 'feature.ts');
-    const sha = await ops.collect(workspace, 'REQ-1');
+    const sha = await ops.collect(workspace, 'REQ-1', base);
     await commitFile(workspace, 'later.ts');
     await ops.push(sha, branch, baseline);
     expect(remoteBranches(fixture.remote).sort()).toEqual([branch, 'main'].sort());
@@ -247,7 +298,7 @@ describe('verification and push (real git)', () => {
     git(fixture.clone, 'remote', 'set-url', '--add', '--push', 'origin', mirror);
     baseline = await ops.fetch();
     const sha = await commitFile(workspace, 'feature.ts');
-    await ops.collect(workspace, 'REQ-1');
+    await ops.collect(workspace, 'REQ-1', base);
     await ops.push(sha, branch, baseline);
     expect(remoteBranches(fixture.remote)).toContain(branch);
     expect(remoteBranches(mirror)).toEqual([branch]);
@@ -263,7 +314,7 @@ describe('verification and push (real git)', () => {
 
     // A shallow workspace still hands over its commit, and the main clone still diffs it in full.
     const sha = await commitFile(workspace, 'feature.ts');
-    expect(await ops.collect(workspace, 'REQ-1')).toBe(sha);
+    expect(await ops.collect(workspace, 'REQ-1', base)).toBe(sha);
     expect(await ops.changedFiles(base, sha)).toEqual(['feature.ts']);
 
     const path = join(fixture.root, 'verify');
@@ -276,7 +327,7 @@ describe('verification and push (real git)', () => {
     const decoy = join(fixture.root, 'decoy.git');
     git(fixture.root, 'init', '--quiet', '--bare', decoy);
     const sha = await commitFile(workspace, 'feature.ts');
-    await ops.collect(workspace, 'REQ-1');
+    await ops.collect(workspace, 'REQ-1', base);
     // Same effect as a pushInsteadOf rule planted in the user's ~/.gitconfig.
     git(fixture.clone, 'config', `url.${decoy}.pushInsteadOf`, fixture.remote);
     await expect(ops.push(sha, branch, baseline)).rejects.toThrow(/push URLs of "origin" changed/);
@@ -298,7 +349,7 @@ describe('verification and push (real git)', () => {
     expect(baseline.pushUrls).toEqual([real]);
 
     const sha = await commitFile(workspace, 'feature.ts');
-    await ops.collect(workspace, 'REQ-1');
+    await ops.collect(workspace, 'REQ-1', base);
     await ops.push(sha, branch, baseline);
     expect(remoteBranches(real)).toEqual([branch]);
     expect(remoteBranches(other)).toEqual([]);

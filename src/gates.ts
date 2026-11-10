@@ -1,6 +1,7 @@
 import type { AgentStatus } from './agent/runner.js';
 import type { CommandSpec } from './config.js';
-import { tail, type Exec } from './exec.js';
+import { tail } from './exec.js';
+import type { Isolation, NetworkRole } from './isolation.js';
 import { sandboxEnv } from './sandbox.js';
 
 export interface GateResult {
@@ -14,38 +15,41 @@ export interface GateResult {
 
 const OUTPUT_TAIL_CHARS = 3_000;
 
+export interface CommandSandbox {
+  remote: string;
+  network: Exclude<NetworkRole, 'agent'>;
+  allowGitTransport?: boolean;
+  home?: string | undefined;
+}
+
 /**
  * Runs every command and records the outcome. It does not stop at the first failure:
- * the reviewer gets the full picture of what is red. With `sandbox`, each command runs
- * in the restricted environment, since gates execute tests the agent may have written.
+ * the reviewer gets the full picture of what is red. Each command runs in the restricted
+ * environment, since gates execute tests the agent may have written; it sees only `cwd`
+ * and its HOME.
  */
 export async function runCommands(
-  exec: Exec,
+  isolation: Isolation,
   commands: readonly CommandSpec[],
   cwd: string,
-  sandbox?: {
-    remote: string;
-    allowGitTransport?: boolean;
-    home?: string | undefined;
-  },
+  sandbox: CommandSandbox,
 ): Promise<GateResult[]> {
   const results: GateResult[] = [];
+  const mounts = [{ path: cwd, writable: true }, ...(sandbox.home ? [{ path: sandbox.home, writable: true }] : [])];
   for (const spec of commands) {
-    const result = await exec(spec.command, spec.args, {
+    const result = await isolation.exec(spec.command, spec.args, {
       cwd,
       timeoutMs: spec.timeoutMs,
-      ...(sandbox
-        ? {
-            env: sandboxEnv({
-              remote: sandbox.remote,
-              passEnv: spec.passEnv,
-              allowGitTransport: sandbox.allowGitTransport ?? false,
-              home: sandbox.home,
-            }),
-            inheritEnv: false,
-            killGroupOnExit: true,
-          }
-        : {}),
+      mounts,
+      network: sandbox.network,
+      env: sandboxEnv({
+        remote: sandbox.remote,
+        passEnv: spec.passEnv,
+        allowGitTransport: sandbox.allowGitTransport ?? false,
+        home: sandbox.home,
+      }),
+      inheritEnv: false,
+      killGroupOnExit: true,
     });
     results.push({
       name: spec.name,

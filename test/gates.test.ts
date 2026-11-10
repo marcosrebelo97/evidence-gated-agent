@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { exec } from '../src/exec.js';
 import { decide, gatesAreWorthRunning, runCommands, type Evidence, type GateResult } from '../src/gates.js';
+import { hostIsolation, type Isolation, type IsolatedExecOptions } from '../src/isolation.js';
 
 const green = (name: string): GateResult => ({ name, passed: true, exitCode: 0, timedOut: false, durationMs: 10, outputTail: '' });
 const red = (name: string, exitCode = 1, timedOut = false): GateResult => ({ ...green(name), passed: false, exitCode, timedOut });
@@ -83,17 +84,41 @@ describe('gatesAreWorthRunning', () => {
 describe('runCommands', () => {
   it('runs every command, even after a failure, and keeps the output tail', async () => {
     const results = await runCommands(
-      exec,
+      hostIsolation(exec),
       [
         { name: 'fails', command: process.execPath, args: ['-e', 'console.error("boom"); process.exit(2)'], timeoutMs: 10_000, passEnv: [] },
         { name: 'passes', command: process.execPath, args: ['-e', 'console.log("ok")'], timeoutMs: 10_000, passEnv: [] },
       ],
       process.cwd(),
+      { remote: 'origin', network: 'gates' },
     );
     expect(results.map((r) => [r.name, r.passed, r.exitCode])).toEqual([
       ['fails', false, 2],
       ['passes', true, 0],
     ]);
     expect(results[0]?.outputTail).toContain('boom');
+  });
+
+  it('declares only the directory and its HOME, with the restricted environment', async () => {
+    const calls: IsolatedExecOptions[] = [];
+    const isolation: Isolation = {
+      mode: 'container',
+      exec: async (_command, _args, options) => {
+        calls.push(options);
+        return { code: 0, stdout: '', stderr: '', timedOut: false, durationMs: 1 };
+      },
+    };
+    const spec = { name: 'test', command: 'npm', args: ['test'], timeoutMs: 1_000, passEnv: [] };
+    await runCommands(isolation, [spec], '/v', { remote: 'origin', network: 'gates', home: '/v.home' });
+    expect(calls[0]).toMatchObject({
+      cwd: '/v',
+      network: 'gates',
+      inheritEnv: false,
+      mounts: [
+        { path: '/v', writable: true },
+        { path: '/v.home', writable: true },
+      ],
+      env: { HOME: '/v.home', GIT_CONFIG_VALUE_0: 'never' },
+    });
   });
 });
