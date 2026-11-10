@@ -17,7 +17,9 @@ citando arquivo e linha quando enfraquecido:
 2. **Publicação por evidência** — `decide` continua pura? Existe algum caminho
    até `git.push` que não passe por `decide(...).publish === true`? Alguma
    condição (commit novo, worktree limpo, caminhos proibidos, gates) foi
-   removida ou afrouxada? A lista vazia de gates continua bloqueando?
+   removida ou afrouxada? A lista vazia de gates continua bloqueando? Os gates
+   continuam rodando num worktree novo no commit anotado, e o push continua
+   enviando esse SHA (não uma ref)?
 3. **`blocked`** — continua sendo um desfecho próprio, sem push e com o
    relatório chegando ao solicitante?
 4. **Idempotência** — o ledger continua registrando `running` antes do
@@ -28,6 +30,12 @@ citando arquivo e linha quando enfraquecido:
    de ser gravado?
 6. **Sem shell** — algum `spawn`/`exec` novo usa `shell: true`, `execSync` com
    string, ou concatena texto da solicitação num comando?
+7. **Sandbox** — algum processo do agente ou dos gates passou a herdar o
+   ambiente do orquestrador (`inheritEnv` diferente de `false`)? Alguma
+   variável sensível entrou na allowlist? O git do agente continua sem
+   transporte?
+8. **`workDir`** — a recusa de `workDir` dentro do alvo ou do orquestrador
+   continua valendo?
 
 Depois verifique se cada comportamento novo tem teste (unitário em
 `test/*.test.ts` ou ponta a ponta em `test/e2e.test.ts`) e rode

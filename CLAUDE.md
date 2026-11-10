@@ -11,19 +11,24 @@ agente com evidência objetiva — nunca a IA.**
 1. **Humano nas pontas**: só solicitações com aprovação explícita entram; o
    orquestrador nunca faz merge, só push de branch própria (sem `--force`).
 2. **Publicação por evidência**: push exige status `implemented` + commit novo
-   no git + working tree limpo + nenhum caminho proibido tocado + todos os
-   gates reexecutados pelo orquestrador verdes. A decisão é uma função pura
-   (`decide`) e deve continuar assim.
+   no git + working tree limpo + nenhum caminho proibido tocado (renames
+   inclusos) + todos os gates verdes num worktree novo, no commit exato. O push
+   envia esse SHA, do clone principal. A decisão é uma função pura (`decide`)
+   e deve continuar assim.
 3. **`blocked` é resultado de primeira classe**: solicitação ambígua vira
    perguntas ao solicitante, nunca código chutado.
 4. **Idempotência**: ledger + lock de instância única — cada solicitação roda
    uma vez, uma instância por vez. Run interrompido vira `failed`, nunca fica
    `running` para sempre.
 5. **Isolamento e auditoria**: um worktree descartável por solicitação; cada
-   run preserva solicitação, anexos, prompt, saída do agente, evidências e
-   relatório em `.agent-runner/runs/<id>/`.
+   tentativa preserva solicitação, anexos, prompt, saída e stderr do agente,
+   evidências e relatório em `<workDir>/runs/<id>/<tentativa>/`.
 6. **Sem shell**: todo processo externo é chamado com `spawn` e `shell: false`
    — texto de solicitação nunca vira comando.
+7. **Sandbox**: agente e gates rodam com `inheritEnv: false` e o ambiente de
+   `sandboxEnv` (allowlist + git sem transporte). Só o orquestrador publica.
+8. **`workDir` fora do alvo e do orquestrador**: senão o agente herda o
+   `CLAUDE.md` errado.
 
 ## Stack
 
@@ -33,11 +38,12 @@ Vitest · tsx. Sem framework de agentes: o agente já é o Claude Code.
 ## Arquitetura
 
 - `src/exec.ts` — único ponto que cria processos (timeout, process group, captura limitada)
+- `src/sandbox.ts` — ambiente do agente e dos gates (allowlist, git sem transporte)
 - `src/config.ts` / `src/request.ts` — schemas Zod da configuração e da solicitação
 - `src/state/` — ledger (escrita atômica) e lock
 - `src/git.ts` / `src/scope.ts` — worktree, evidência no git, caminhos proibidos
 - `src/agent/` — montagem do prompt a partir do roteiro e execução headless
-- `src/gates.ts` — gates reexecutados pelo orquestrador e a função `decide`
+- `src/gates.ts` — gates e a função `decide`; a verificação no commit exato fica em `pipeline.ts`
 - `src/notify.ts` — console e Telegram
 - `src/pipeline.ts` — orquestra um poll; `src/cli.ts` — entrada
 - `playbook/agent-playbook.md` — o roteiro de 10 etapas que o agente segue

@@ -2,6 +2,11 @@
 
 Cada decisão com o porquê — inclusive o que foi decidido **não** fazer.
 
+As decisões 12 a 15 nasceram depois da primeira versão: de uma revisão
+independente do código, feita antes da publicação, e de um smoke test com o
+Claude Code real. O histórico de commits mostra cada correção com o teste que
+a prova.
+
 ## 1. Orquestrador determinístico, IA só no miolo
 
 Detecção, worktree, gates, push e notificação são código comum. O LLM entra
@@ -46,8 +51,9 @@ combinações sem git nem processo.
 
 Se sobrar arquivo sem commit, o resultado é `rejected`, mesmo com gates verdes.
 
-**Por quê:** os gates rodam no working tree. Com sobras, eles validam um estado
-que não é o que vai ser publicado.
+**Por quê:** sobra sem commit quase sempre é entrega incompleta (o agente
+esqueceu um arquivo). Publicar o commit sem ela entregaria outra coisa que não
+a que o agente testou.
 
 ## 6. Gates rodam até o fim; e só quando vale
 
@@ -104,6 +110,53 @@ remota. O push nunca usa `--force` e recusa a branch base.
 **Por quê:** `-B` faz um retry partir da base atual, não de uma tentativa velha.
 Sem `--force`, um retry de algo já publicado falha em vez de reescrever uma
 branch que alguém pode estar revisando.
+
+## 12. Verificar num worktree novo, no commit exato, e publicar esse SHA
+
+Depois do agente, o orquestrador anota o SHA, cria um worktree destacado nele,
+roda o setup e os gates ali, e faz push exatamente daquele SHA, a partir do
+clone principal.
+
+**Por quê:** na primeira versão, os gates rodavam no worktree do próprio agente,
+e o push enviava o que a branch apontasse no momento. Dois problemas: testes
+escritos pelo agente podiam mover a branch durante os gates, e arquivos
+ignorados deixados por ele (um gerado, um `node_modules` alterado) podiam fazer
+a suíte passar num estado que quebra num checkout limpo. O custo é refazer o
+setup; o ganho é que o verificado é o publicado. Fazer o push do clone
+principal também resolve o remote como configurado — no smoke test real, um
+remote com caminho relativo quebrava o push feito de dentro do worktree.
+
+## 13. Sandbox de ambiente para o agente e para os gates
+
+O agente e os gates recebem só uma allowlist de variáveis (mais `passEnv`), e o
+git roda com `protocol.allow=never`.
+
+**Por quê:** com `Write` e `npm test` liberados, o agente consegue executar
+qualquer código: bastava escrever um script de teste que fizesse `git push`,
+contornando a decisão, ou que lesse o token do Telegram do ambiente. Bloquear
+`Bash(git push:*)` na allowlist não cobre isso. Sem transporte git e sem
+segredos no ambiente, publicar volta a ser exclusividade do orquestrador.
+
+**Limite assumido:** o agente precisa do `HOME` para as credenciais do Claude
+Code. Isso não substitui usuário dedicado ou container — o README diz isso
+explicitamente.
+
+## 14. Caminhos proibidos conferidos com renames e nomes crus
+
+O diff é lido com `--no-renames -z`.
+
+**Por quê:** `git diff --name-only` mostra só o destino de um rename (mover
+`.env.production` para um nome inocente escondia o arquivo) e põe aspas em
+nomes com acento (`"\303\247/.env"` não casava com nenhum padrão).
+
+## 15. `workDir` fora do repositório alvo e do orquestrador
+
+O padrão é uma pasta por repositório em `~/.local/state`; dentro do alvo ou do
+orquestrador, a configuração é recusada.
+
+**Por quê:** o Claude Code lê `CLAUDE.md` subindo pelas pastas. Com os
+worktrees dentro do orquestrador, o agente recebia as instruções do
+orquestrador como se fossem do projeto alvo.
 
 ## O que decidi não fazer (por enquanto)
 
