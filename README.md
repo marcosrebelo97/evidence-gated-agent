@@ -103,10 +103,18 @@ destacados na notificação para o revisor (`attentionPaths`).
 - **Humano nas pontas**: aprovação explícita na entrada; o orquestrador nunca
   faz merge, nunca usa `--force` e se recusa a fazer push na branch base.
 - **Sandbox do agente e dos gates**: os dois rodam com um ambiente mínimo
-  (`PATH`, `HOME`, locale e o que for liberado em `passEnv`) — tokens,
+  (`PATH`, `HOME`, locale, proxy e o que for liberado em `passEnv`) — tokens,
   credenciais de nuvem e o agente SSH do orquestrador não chegam a eles. O git
-  lá dentro roda com `protocol.allow=never`: nenhum fetch, push ou clone
-  funciona, nem por um script de teste que o agente tenha escrito.
+  lá dentro roda com `protocol.allow=never` e o push URL anulado, o que barra o
+  caminho direto (`git push` do agente). Um script escrito por ele pode desfazer
+  essas variáveis; contra isso vale o isolamento de sistema (abaixo).
+- **Hooks e config do repositório não executam do lado do orquestrador**: o
+  worktree compartilha `.git/hooks` e `.git/config` com o clone principal, e o
+  agente pode escrever nos dois. Todo comando git do orquestrador roda com
+  `core.hooksPath=/dev/null` e `core.fsmonitor=false`; o push vai para a URL
+  anotada antes do agente rodar, com `--no-verify`; e o `.git/config` é
+  comparado com um snapshot depois do agente e depois da verificação —
+  qualquer mudança é desfeita e o run não é publicado.
 - **Ferramentas restritas**: a configuração de exemplo libera só leitura,
   edição, testes, type-check e git local; ignora hooks, permissões e servidores
   MCP do usuário (`--setting-sources project`, `--strict-mcp-config`).
@@ -115,8 +123,12 @@ destacados na notificação para o revisor (`attentionPaths`).
   delimitadora dentro do texto é neutralizada. Anexos são conferidos pelo
   caminho real (symlinks para fora da pasta são recusados).
 - **Sem shell**: todo processo externo é criado com `spawn` e `shell: false`; o
-  timeout derruba o grupo de processos inteiro, e parar o orquestrador
-  (Ctrl+C, systemd) também para o agente.
+  timeout derruba o grupo de processos inteiro, o que o agente ou os gates
+  deixarem rodando em segundo plano morre quando eles terminam, e parar o
+  orquestrador (Ctrl+C, systemd, SIGHUP) também para o agente.
+- **Evidência presa a um SHA**: o orquestrador lê o `HEAD` uma vez e calcula
+  commits, arquivos alterados, verificação e push a partir desse SHA — mover a
+  branch depois não muda o que é checado nem o que é publicado.
 - **Idempotência e recuperação**: o ledger registra `running` antes de qualquer
   trabalho, com escrita atômica. Se o processo morrer no meio, o próximo poll
   marca aquele run como `failed` — nunca fica pendurado, nunca é retentado em
@@ -214,7 +226,7 @@ aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
 ## Testes
 
 ```bash
-npm run check   # typecheck + 131 testes
+npm run check   # typecheck + 145 testes
 ```
 
 - **Unitários** para cada peça: a função `decide` em todas as combinações, o
@@ -257,7 +269,8 @@ playbook/agent-playbook.md   # o roteiro que o agente segue
 - O desfecho é um push de branch; abrir o PR automaticamente, com o relatório
   como descrição, é o próximo passo natural.
 - A verificação refaz o setup num worktree novo: mais lenta, mas é o que
-  garante que o verificado é o publicado.
+  garante que o commit publicado é o mesmo que passou nos gates, num checkout
+  limpo.
 - Métricas que valem acompanhar: taxa de `published` aceito sem retrabalho na
   revisão, lead time da aprovação até a branch, apontamentos da revisão humana
   por entrega e taxa de `blocked` legítimo.

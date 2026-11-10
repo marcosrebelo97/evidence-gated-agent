@@ -122,7 +122,8 @@ e o push enviava o que a branch apontasse no momento. Dois problemas: testes
 escritos pelo agente podiam mover a branch durante os gates, e arquivos
 ignorados deixados por ele (um gerado, um `node_modules` alterado) podiam fazer
 a suíte passar num estado que quebra num checkout limpo. O custo é refazer o
-setup; o ganho é que o verificado é o publicado. Fazer o push do clone
+setup; o ganho é que o commit publicado é exatamente o que passou nos gates,
+num checkout limpo. Fazer o push do clone
 principal também resolve o remote como configurado — no smoke test real, um
 remote com caminho relativo quebrava o push feito de dentro do worktree.
 
@@ -134,12 +135,19 @@ git roda com `protocol.allow=never`.
 **Por quê:** com `Write` e `npm test` liberados, o agente consegue executar
 qualquer código: bastava escrever um script de teste que fizesse `git push`,
 contornando a decisão, ou que lesse o token do Telegram do ambiente. Bloquear
-`Bash(git push:*)` na allowlist não cobre isso. Sem transporte git e sem
-segredos no ambiente, publicar volta a ser exclusividade do orquestrador.
+`Bash(git push:*)` na allowlist não cobre isso. Sem segredos no ambiente e
+sem transporte para os comandos git do agente, o caminho direto fecha.
 
-**Limite assumido:** o agente precisa do `HOME` para as credenciais do Claude
-Code. Isso não substitui usuário dedicado ou container — o README diz isso
+**Limite assumido:** variáveis de ambiente valem para o processo, não contra
+ele: um script do agente pode rodar `env -u GIT_CONFIG_COUNT git push` e o
+transporte volta. Por isso a segurança da publicação não se apoia aqui
+(veja a decisão 16), e o agente precisa do `HOME` para as credenciais do Claude
+Code. Nada disso substitui usuário dedicado ou container — o README diz isso
 explicitamente.
+
+O setup que roda **antes** do agente, sobre a base intacta, mantém o transporte
+git (dependências via git quebrariam sem ele); o setup da verificação, que roda
+sobre o commit do agente, não.
 
 ## 14. Caminhos proibidos conferidos com renames e nomes crus
 
@@ -157,6 +165,36 @@ orquestrador, a configuração é recusada.
 **Por quê:** o Claude Code lê `CLAUDE.md` subindo pelas pastas. Com os
 worktrees dentro do orquestrador, o agente recebia as instruções do
 orquestrador como se fossem do projeto alvo.
+
+## 16. Hooks e config compartilhados não executam do lado do orquestrador
+
+Todo comando git do orquestrador roda com `-c core.hooksPath=/dev/null -c
+core.fsmonitor=false`. O `fetch` anota o push URL antes do agente; o push usa
+essa URL com `--no-verify`. O `.git/config` vira snapshot antes do agente e é
+comparado depois dele e depois da verificação: se mudou, é restaurado e o run
+termina `failed` (ou `rejected`, com o gate `git-config-integrity`).
+
+**Por quê:** a re-revisão mostrou que o worktree compartilha `.git/hooks` e
+`.git/config` com o clone principal. O agente podia plantar um `post-checkout`
+(que rodaria no `worktree add` da verificação, com o ambiente completo do
+orquestrador), um `pre-push`, trocar `remote.origin.url` para publicar em outro
+lugar, ou pôr um comando em `core.fsmonitor` que o próximo `git status` do
+orquestrador executaria. Repositórios com husky (`core.hooksPath=.husky`) caem
+no mesmo caso, já que `.husky/` é editável pelo agente. As três medidas fecham
+os caminhos de execução; o snapshot garante que o clone principal termina como
+começou.
+
+## 17. Toda evidência sai de um único SHA; nada do agente sobrevive a ele
+
+O `HEAD` é lido uma vez; `commitsAhead`, `changedFiles`, a verificação e o push
+recebem esse SHA (e recusam qualquer coisa que não seja um SHA completo). O
+`exec` ganhou `killGroupOnExit`, usado para o agente e para os gates.
+
+**Por quê:** antes, o diff e a contagem de commits liam a branch no momento, e o
+SHA era lido por último. Um processo deixado em segundo plano pelo agente podia
+mover a branch entre as checagens — o diff conferido não seria o do commit
+verificado. Matar o grupo de processos na saída normal tira esse processo de
+cena; derivar tudo do SHA torna a ordem irrelevante.
 
 ## O que decidi não fazer (por enquanto)
 

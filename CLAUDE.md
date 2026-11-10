@@ -29,6 +29,10 @@ agente com evidência objetiva — nunca a IA.**
    `sandboxEnv` (allowlist + git sem transporte). Só o orquestrador publica.
 8. **`workDir` fora do alvo e do orquestrador**: senão o agente herda o
    `CLAUDE.md` errado.
+9. **Git do orquestrador blindado**: todo comando passa por `SAFE_GIT` (sem
+   hooks, sem fsmonitor), o push vai para a URL anotada no `fetch` com
+   `--no-verify`, e o `.git/config` é conferido contra o snapshot depois do
+   agente e da verificação. Evidência e push derivam de um único SHA.
 
 ## Stack
 

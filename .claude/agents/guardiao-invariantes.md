@@ -36,6 +36,11 @@ citando arquivo e linha quando enfraquecido:
    transporte?
 8. **`workDir`** — a recusa de `workDir` dentro do alvo ou do orquestrador
    continua valendo?
+9. **Git do orquestrador** — algum comando git novo deixou de passar por
+   `SAFE_GIT`? O push continua indo para a URL anotada no `fetch`, com
+   `--no-verify`? O snapshot do `.git/config` continua conferido depois do
+   agente e da verificação? Alguma evidência voltou a ler a branch em vez do
+   SHA?
 
 Depois verifique se cada comportamento novo tem teste (unitário em
 `test/*.test.ts` ou ponta a ponta em `test/e2e.test.ts`) e rode
