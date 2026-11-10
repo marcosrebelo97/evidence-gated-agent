@@ -1,0 +1,8 @@
+node_modules/
+coverage/
+
+# Estado local do orquestrador (ledger, lock, runs, worktrees)
+.agent-runner/
+
+# Configuração real fica fora do versionamento; o exemplo é versionado
+agent.config.json
