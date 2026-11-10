@@ -42,8 +42,8 @@ export interface GitOps {
   /** A new repository with only `commit` checked out: what the gates verify is exactly what gets pushed. */
   createVerification(path: string, commit: string): Promise<void>;
   /**
-   * Pushes an exact commit to the agent branch, at every push URL of the baseline.
-   * Never forced, never to the base.
+   * Pushes an exact commit to the agent branch, by remote name, after checking that its push
+   * URLs are still those of the baseline. Never forced, never to the base.
    */
   push(commit: string, branch: string, baseline: Baseline): Promise<void>;
 }
@@ -71,7 +71,7 @@ const SAFE_GIT = ['-c', 'core.hooksPath=/dev/null', '-c', 'core.fsmonitor=false'
 
 const FULL_SHA = /^[0-9a-f]{40,64}$/;
 
-/** Commits of base history copied into the agent's repository. */
+/** Commits of history copied into the agent's repository and into the verification. */
 const WORKSPACE_HISTORY = 50;
 
 function assertSha(commit: string): void {
@@ -190,8 +190,9 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
 
     async createVerification(path, commit) {
       assertSha(commit);
-      // The gates need the files, not the history.
-      await freshRepository(path, commit, 1);
+      // Same history depth as the agent had: a gate that looks at HEAD~1 or a commit range
+      // must see what the agent saw, or a correct commit would be rejected.
+      await freshRepository(path, commit, WORKSPACE_HISTORY);
       // The commit's .gitattributes could select a filter from the user's git config (git-lfs, with
       // its credentials): check out unprivileged and without that config.
       await untrusted((env) => run(path, ['checkout', '--quiet', '--detach', commit], env));
@@ -206,9 +207,9 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
       if (now.join('\n') !== pushUrls.join('\n')) {
         throw new Error(`push URLs of "${settings.remote}" changed during the run; refusing to push`);
       }
-      for (const url of pushUrls) {
-        await inRepo(['push', '--quiet', '--no-verify', url, `${commit}:refs/heads/${branch}`]);
-      }
+      // By remote name: git rewrites the configured URL once, exactly as get-url reported it.
+      // Pushing to the already rewritten URL would apply the insteadOf rules a second time.
+      await inRepo(['push', '--quiet', '--no-verify', settings.remote, `${commit}:refs/heads/${branch}`]);
     },
   };
 }

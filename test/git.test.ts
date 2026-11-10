@@ -253,7 +253,7 @@ describe('verification and push (real git)', () => {
     expect(remoteBranches(mirror)).toEqual([branch]);
   });
 
-  it('copies only recent history into the workspace and a single commit into the verification', async () => {
+  it('copies only recent history into the workspace and into the verification', async () => {
     for (let i = 0; i < 60; i++) git(fixture.clone, 'commit', '--quiet', '--allow-empty', '-m', `history ${i}`);
     git(fixture.clone, 'push', '--quiet', 'origin', 'main');
     baseline = await ops.fetch();
@@ -268,7 +268,8 @@ describe('verification and push (real git)', () => {
 
     const path = join(fixture.root, 'verify');
     await ops.createVerification(path, sha);
-    expect(git(path, 'rev-list', '--count', 'HEAD').trim()).toBe('1');
+    expect(git(path, 'rev-list', '--count', 'HEAD').trim()).toBe('50');
+    expect(git(path, 'rev-parse', 'HEAD~1').trim()).toBe(base);
   });
 
   it('refuses to push when the push URLs changed after fetch', async () => {
@@ -281,6 +282,26 @@ describe('verification and push (real git)', () => {
     await expect(ops.push(sha, branch, baseline)).rejects.toThrow(/push URLs of "origin" changed/);
     expect(remoteBranches(decoy)).toEqual([]);
     expect(remoteBranches(fixture.remote)).toEqual(['main']);
+  });
+
+  it('applies insteadOf rules once, so the push lands where get-url said it would', async () => {
+    const real = join(fixture.root, 'real.git');
+    const other = join(fixture.root, 'other.git');
+    git(fixture.root, 'init', '--quiet', '--bare', real);
+    git(fixture.root, 'init', '--quiet', '--bare', other);
+    // "fetch over one URL, push over another", plus a rule that matches the rewritten URL.
+    git(fixture.clone, 'remote', 'set-url', 'origin', 'alias:x');
+    git(fixture.clone, 'config', `url.${real}.pushInsteadOf`, 'alias:x');
+    git(fixture.clone, 'config', `url.${other}.insteadOf`, real);
+    git(fixture.clone, 'config', `url.${fixture.remote}.insteadOf`, 'alias:x');
+    baseline = await ops.fetch();
+    expect(baseline.pushUrls).toEqual([real]);
+
+    const sha = await commitFile(workspace, 'feature.ts');
+    await ops.collect(workspace, 'REQ-1');
+    await ops.push(sha, branch, baseline);
+    expect(remoteBranches(real)).toEqual([branch]);
+    expect(remoteBranches(other)).toEqual([]);
   });
 
   it('refuses to push or branch on the base branch', async () => {
