@@ -30,6 +30,13 @@ export interface ContainerIdentity {
 
 export const CONTAINER_LABEL = 'evidence-gated-agent.workdir';
 
+/**
+ * TMPDIR inside the container, on a tmpfs of its own. /tmp cannot be it: the mounts keep host
+ * paths, and one under /tmp (say /tmp/claude-1001/...) makes docker create /tmp/claude-1001
+ * owned by root, which Claude Code refuses as its temp directory.
+ */
+export const CONTAINER_TMPDIR = '/run/ega-tmp';
+
 /** Docker image reference: never something docker would read as an option. */
 export const IMAGE_REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._/:@-]*$/;
 
@@ -111,6 +118,8 @@ export function containerArgs(
     '--label', `${CONTAINER_LABEL}=${user.label}`,
     // exec: docker defaults a tmpfs to noexec, which breaks native builds and tools unpacked in /tmp.
     '--tmpfs', '/tmp:rw,exec,nosuid,nodev',
+    '--tmpfs', `${CONTAINER_TMPDIR}:rw,exec,nosuid,nodev,mode=1777`,
+    '-e', `TMPDIR=${CONTAINER_TMPDIR}`,
     '--memory', settings.memory,
     '--pids-limit', String(settings.pids),
     '--network', network,

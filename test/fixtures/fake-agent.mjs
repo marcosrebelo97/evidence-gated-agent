@@ -2,6 +2,7 @@
 // Usage: node fake-agent.mjs <scenario> [claude flags...] --add-dir <contractDir> [--add-dir <dir>...]  (prompt on stdin)
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, chmodSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const args = process.argv.slice(2);
@@ -110,7 +111,7 @@ switch (scenario) {
   }
   case 'report-home':
     commit('feature.txt', 'ok\n');
-    finish('implemented', `home=${process.env.HOME}`);
+    finish('implemented', `home=${process.env.HOME}\ntmpdir=${tmpdir()}`);
     break;
   case 'crash':
     process.exit(1);

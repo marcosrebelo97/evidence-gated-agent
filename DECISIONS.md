@@ -335,6 +335,12 @@ só os nomes que o próprio orquestrador define); uma `image` começando com `-`
 que o docker leria como opção; e um diretório temporário mais uma chamada ao
 docker em todo poll, mesmo sem trabalho.
 
+O smoke real no container achou mais um: com o `workDir` abaixo de
+`/tmp/claude-1001/`, o docker cria `/tmp/claude-1001` dentro do container,
+com dono root, como ponto de montagem — e o Claude Code se recusa a usar como
+pasta temporária uma que não é do usuário. O `TMPDIR` do container passou a
+ser um tmpfs próprio (`/run/ega-tmp`), fora de qualquer caminho do host.
+
 **Ficou no host:** o setup confiável sobre a base intacta (pode precisar das
 chaves do usuário) e o checkout da verificação, que roda num repositório novo
 do orquestrador, sem nenhum filtro definido.

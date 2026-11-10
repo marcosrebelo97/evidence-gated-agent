@@ -141,7 +141,7 @@ describe('end to end with real git and a fake agent', () => {
     const [run] = (await pollOnce(deps)).processed;
     const home = runnerPaths(config.workDir).home(runnerPaths(config.workDir).workspace('REQ-1'));
     expect(run?.outcome).toBe('published');
-    expect(notifier.sent[0]?.report).toBe(`home=${home}`);
+    expect(notifier.sent[0]?.report).toMatch(new RegExp(`^home=${home}\\n`));
     expect(existsSync(home)).toBe(false);
   });
 

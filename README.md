@@ -179,7 +179,7 @@ e todo git dentro do repositório dele. Cada um enxerga só o que declarou:
 | git no repositório do agente (`rev-parse`, `status`, `bundle`) | o repositório, um `HOME` descartável e, para o bundle, uma pasta própria | sempre `none` |
 
 O container roda com o uid:gid do usuário, `--cap-drop ALL`,
-`no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs (`nosuid`, `nodev`) e limites de memória
+`no-new-privileges`, raiz somente leitura, `/tmp` e um `TMPDIR` próprio em tmpfs (`nosuid`, `nodev`) e limites de memória
 e de processos; a imagem é local (`--pull never`) e o entrypoint dela é
 ignorado. Segredos passam por referência (`-e NOME`), nunca na linha de
 comando; a rede `host` é recusada. O clone principal, o `HOME` do usuário, o

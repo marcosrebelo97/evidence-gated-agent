@@ -83,7 +83,9 @@ describe('isolation "container" (real docker)', () => {
     expect(git(fixture.remote, 'rev-parse', BRANCH).trim()).toBe(report.processed[0]?.commit);
     expect(git(fixture.remote, 'log', '-1', '--format=%an', BRANCH).trim()).toBe('support-agent');
     // The agent saw its own HOME, next to its workspace, not the user's.
-    expect(notifier.sent[0]?.report).toMatch(/home=.*\/work\/workspaces\/REQ-1\.home$/);
+    expect(notifier.sent[0]?.report).toMatch(/home=.*\/work\/workspaces\/REQ-1\.home\n/);
+    // Its own temp directory, never a /tmp path docker created for a mount.
+    expect(notifier.sent[0]?.report).toContain('tmpdir=/run/ega-tmp');
     expect(containersLeft()).toBe('');
   });
 

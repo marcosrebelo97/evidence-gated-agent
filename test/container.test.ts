@@ -53,7 +53,9 @@ describe('containerArgs', () => {
     expect(flag(args, '--user')).toBe('1001:1001');
     expect(flag(args, '--cap-drop')).toBe('ALL');
     expect(flag(args, '--security-opt')).toBe('no-new-privileges');
-    expect(flag(args, '--tmpfs')).toBe('/tmp:rw,exec,nosuid,nodev');
+    const tmpfs = args.flatMap((arg, i) => (args[i - 1] === '--tmpfs' ? [arg] : []));
+    expect(tmpfs).toEqual(['/tmp:rw,exec,nosuid,nodev', '/run/ega-tmp:rw,exec,nosuid,nodev,mode=1777']);
+    expect(args).toContain('TMPDIR=/run/ega-tmp');
     expect(flag(args, '--label')).toBe('evidence-gated-agent.workdir=abc123');
     expect(flag(args, '--memory')).toBe('4g');
     expect(flag(args, '--pids-limit')).toBe('1024');
@@ -123,7 +125,9 @@ describe('containerArgs', () => {
     expect(args.join(' ')).not.toContain('sk-ant-oat-secret');
     expect(args.join(' ')).not.toContain('ghp_secret');
     expect(args.join(' ')).not.toContain('user:pass');
-    expect(variables.some((v) => /^(PATH|SHELL|TMPDIR)\b/.test(v))).toBe(false);
+    expect(variables.some((v) => /^(PATH|SHELL)\b/.test(v))).toBe(false);
+    // The host's TMPDIR stays out; the container gets its own.
+    expect(variables.filter((v) => v.startsWith('TMPDIR'))).toEqual(['TMPDIR=/run/ega-tmp']);
     expect(args.join(' ')).not.toContain('AWS_SECRET_ACCESS_KEY');
 
     // The docker CLI gets what it needs to reach the daemon, plus the referenced values.
