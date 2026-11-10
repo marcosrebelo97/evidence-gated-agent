@@ -200,16 +200,20 @@ dotfiles do usuário. Os repositórios nascem com `--template=`, sem os hooks de
 template do usuário.
 
 **Custo:** criar repositórios a cada run é mais lento que um worktree. Para não
-copiar o histórico inteiro, o do agente recebe os últimos 50 commits da base e
-o da verificação, só o commit checado.
+copiar o histórico inteiro, os dois recebem os últimos 50 commits — a
+verificação chegou a receber só um, mas aí um gate que olha `HEAD~1` reprovava
+um commit correto.
 
 ## 17. Toda evidência sai de dois SHAs anotados; nada do agente sobrevive a ele
 
 O `fetch` anota o SHA da base e os push URLs do remote antes do agente rodar;
 a coleta anota o SHA do agente uma vez. `commitsAhead`, `changedFiles`, a
 verificação e o push recebem esses valores explicitamente (e recusam o que não
-for um SHA completo). O push vai para os URLs anotados e é recusado se eles
-mudaram durante o run. A ref privada da coleta é apagada no fim do run. O
+for um SHA completo). O push é recusado se os URLs mudaram durante o run, e é
+feito pelo nome do remote: empurrar para a URL já reescrita faria o git
+aplicar as regras `insteadOf` uma segunda vez, e o commit poderia ir para
+outro lugar. A ref privada da coleta é apagada no fim do run, exceto em
+`ready`, em que o commit espera um push manual. O
 `exec` ganhou `killGroupOnExit`, usado para o agente e para os gates.
 
 **Por quê:** antes, o diff e a contagem de commits liam refs no momento. Um
@@ -225,11 +229,12 @@ reescrita durante o run decidiria para onde o commit vai.
 
 Por padrão (`isolateHome`), o agente recebe um `HOME` novo e vazio ao lado do
 seu repositório, e a verificação (setup e gates sobre o commit dele) recebe
-outro; os dois são apagados com o repositório. Os runs isolados compartilham
-só o cache do npm, em `workDir/cache/npm`. O Claude Code autentica por
+outro; os dois são apagados com o repositório. O Claude Code autentica por
 `ANTHROPIC_API_KEY` ou `CLAUDE_CODE_OAUTH_TOKEN` (de `claude setup-token`),
-liberados em `agent.passEnv` por padrão; sem nenhum deles, o poll recusa
-começar. `XDG_CONFIG_HOME` e `CLAUDE_CONFIG_DIR` saíram da allowlist.
+repassados ao agente só quando o `HOME` é isolado — com o `HOME` do usuário,
+o login da assinatura tem de continuar valendo sobre uma chave de API que por
+acaso esteja exportada. `XDG_CONFIG_HOME` e `CLAUDE_CONFIG_DIR` saíram da
+allowlist.
 
 O setup que roda **antes** do agente, sobre a base intacta, é código
 confiável e mantém o `HOME` do usuário: sem as chaves SSH e os tokens de
@@ -239,9 +244,17 @@ registry dele, dependências privadas quebrariam toda solicitação.
 escrever no `~/.gitconfig` um `pushInsteadOf` ou um `credential.helper` — e
 todo comando git do orquestrador lê esse arquivo com o ambiente completo. O
 mesmo vale para `~/.npmrc`, `~/.ssh` e `~/.claude`. Um `HOME` por run também
-impede que um run contamine o seguinte. O cache compartilhado do npm é a
-exceção consciente: os pacotes são endereçados pelo hash de integridade do
-lockfile, então uma entrada adulterada não passa no `npm ci`.
+impede que um run contamine o seguinte — e por isso não há cache de pacotes
+compartilhado. Uma versão anterior compartilhava o cache do npm; a revisão
+mostrou que o npm só confere a integridade dos tarballs, não do `_npx` nem de
+dependências sem hash no lockfile, e um agente podia deixar código para o
+próximo run executar.
+
+Também houve uma checagem de credencial na largada, que derrubava o poll
+inteiro sem entrada no ledger nem notificação, e recusava provedores válidos
+(Bedrock, Vertex). Saiu: quando o agente falha, o motivo registrado traz a
+mensagem do próprio Claude Code, e a falha segue o caminho normal de
+`failed` com notificação.
 
 **Limite assumido:** o agente roda com o mesmo usuário do poll. Um script dele
 ainda pode escrever por caminho absoluto num arquivo desse usuário. O que este
