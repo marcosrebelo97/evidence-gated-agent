@@ -44,8 +44,9 @@ agente com evidência objetiva — nunca a IA.**
 10. **Modo container**: com `isolation.mode = "container"`, o código não
     confiável só enxerga os mounts declarados. `containerArgs` mantém
     `--cap-drop ALL`, `no-new-privileges`, `--read-only`, `--pull never`,
-    usuário não root, segredos por referência e nunca a rede `host`; o
-    container é removido depois de todo comando.
+    usuário não root, `/tmp` com `exec`, segredos por referência (texto
+    claro só para os nomes que o orquestrador define), o rótulo do `workDir`
+    e nunca a rede `host`; nenhum container sobrevive ao poll seguinte.
 
 ## Stack
 

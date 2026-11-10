@@ -179,12 +179,14 @@ e todo git dentro do repositório dele. Cada um enxerga só o que declarou:
 | git no repositório do agente (`rev-parse`, `status`, `bundle`) | o repositório, um `HOME` descartável e, para o bundle, uma pasta própria | sempre `none` |
 
 O container roda com o uid:gid do usuário, `--cap-drop ALL`,
-`no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs e limites de memória
+`no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs (`nosuid`, `nodev`) e limites de memória
 e de processos; a imagem é local (`--pull never`) e o entrypoint dela é
 ignorado. Segredos passam por referência (`-e NOME`), nunca na linha de
 comando; a rede `host` é recusada. O clone principal, o `HOME` do usuário, o
 ledger e a auditoria não existem dentro dele. Cada container é removido ao fim
-do comando, num timeout e se o poll for interrompido. A
+do comando (`--rm`), num timeout e se o poll for interrompido; um poll morto
+com `SIGKILL` deixa o container rodando até o próximo poll, que remove os que
+têm o rótulo do mesmo `workDir`. A
 [suíte do container](test/container/container.test.ts) prova isso com Docker
 real: um agente que tenta escrever no `.git/config` do clone principal, num
 arquivo do host e em `/etc/passwd` recebe `ENOENT`, `ENOENT` e `EROFS`.
@@ -198,8 +200,17 @@ confiável e pode precisar das chaves do usuário). O que o container não cobre
 - **o grupo `docker` equivale a root** no host: quem roda o poll já tem esse
   poder, e o agente não (ele não vê o socket);
 - **o agente tem rede**, porque precisa da API: ele pode mandar para fora o que
-  enxerga — o repositório e os anexos. Restrinja a saída com uma rede docker
-  própria (proxy com allowlist) em `network.agent`.
+  enxerga — o repositório e os anexos. E a rede `bridge` não é só internet: por
+  ela o container alcança o gateway do host (serviços escutando em `0.0.0.0`),
+  a rede local e, numa VM de nuvem, o serviço de metadata (`169.254.169.254`),
+  que entrega as credenciais da instância. O setup sobre o commit do agente
+  também usa `bridge`, e um `postinstall` que ele adicionou roda lá. Em
+  produção, aponte `network.agent` e `network.setup` para uma rede docker
+  própria, com saída só para a API e o registry (proxy com allowlist), e
+  bloqueie o metadata no host;
+- **o CLI do docker usa o `~/.docker/config.json` do usuário**: se ele
+  define `proxies`, o docker os injeta em todo container, por fora da
+  allowlist de variáveis.
 
 Em qualquer modo, em produção:
 
@@ -329,8 +340,8 @@ aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
 ## Testes
 
 ```bash
-npm run check            # typecheck + 175 testes, sem Docker
-npm run test:container   # 4 testes de integração com Docker real (opt-in)
+npm run check            # typecheck + 183 testes, sem Docker
+npm run test:container   # 5 testes de integração com Docker real (opt-in)
 ```
 
 - **Unitários** para cada peça: a função `decide` em todas as combinações, o
@@ -355,8 +366,10 @@ npm run test:container   # 4 testes de integração com Docker real (opt-in)
   e o `HOME` isolado — sem gastar crédito de API.
 - **Modo container com Docker real** (`npm run test:container`, fora do
   `npm test`): publicação com agente, gates e git em containers; tentativa de
-  escrever fora dos mounts; `REPORT.md` com symlink para uma chave do host; e
-  um agente que estoura o timeout sem deixar container para trás. Os
+  escrever fora dos mounts; `REPORT.md` com symlink para uma chave do host; um
+  gate que executa de `/tmp`; um agente que estoura o timeout sem deixar
+  container para trás; e o container órfão de um poll morto, removido pelo
+  seguinte. Os
   argumentos do `docker run` têm testes unitários próprios.
 
 ## Estrutura

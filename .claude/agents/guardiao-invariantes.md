@@ -52,7 +52,8 @@ citando arquivo e linha quando enfraquecido:
     `--user` não root, entrypoint vazio)? Algum mount novo vai além do que o
     comando precisa, ou um caminho entra sem `assertMountable`? Algum segredo
     passou a ir na linha de comando (`-e NOME=valor`)? A rede `host` voltou a
-    ser aceita? Algum caminho deixou de remover o container?
+    ser aceita? Algum caminho deixou de remover o container, ou um container
+    novo saiu sem o rótulo do `workDir`?
 
 Depois verifique se cada comportamento novo tem teste (unitário em
 `test/*.test.ts`, ponta a ponta em `test/e2e.test.ts` ou, para o modo

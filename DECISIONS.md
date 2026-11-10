@@ -314,7 +314,8 @@ existem: não há caminho para eles.
   container continuem do usuário do poll, sem `chown` nem root. Sem entrada no
   `/etc/passwd` da imagem, o `os.userInfo()` do Node falha: o orquestrador
   monta passwd e group mínimos, só leitura. Rodar o poll como root é recusado.
-- `--cap-drop ALL`, `no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs,
+- `--cap-drop ALL`, `no-new-privileges`, raiz somente leitura, `/tmp` em tmpfs
+  (`exec`: o padrão do docker é `noexec`, que quebra builds nativos),
   limites de memória e de processos, `--pull never` (a imagem é a que foi
   construída e revisada, nunca a que o registry tiver agora) e entrypoint
   vazio.
@@ -323,8 +324,16 @@ existem: não há caminho para eles.
   CA são do host e ficam fora.
 - Rede por papel; `host` é recusada (daria acesso ao `localhost` do host). Os
   gates começam sem rede; o git no repositório do agente nunca tem rede.
-- Matar o CLI do docker não para o container: o orquestrador faz `docker rm -f`
-  depois de todo comando e, no sinal, remove os que estiverem ativos.
+- Matar o CLI do docker não para o container: num timeout ou erro do docker o
+  orquestrador faz `docker rm -f`, e no sinal remove os que estiverem ativos.
+  Contra `SIGKILL`, os containers levam o rótulo do `workDir`, e o primeiro
+  container de cada poll (já com o lock) remove os que sobraram.
+
+A revisão desta etapa corrigiu, além da coleta (decisão 16): o `/tmp` em
+`noexec`; toda variável `GIT_*` indo em texto claro na linha de comando (hoje
+só os nomes que o próprio orquestrador define); uma `image` começando com `-`,
+que o docker leria como opção; e um diretório temporário mais uma chamada ao
+docker em todo poll, mesmo sem trabalho.
 
 **Ficou no host:** o setup confiável sobre a base intacta (pode precisar das
 chaves do usuário) e o checkout da verificação, que roda num repositório novo
@@ -338,7 +347,9 @@ para usar o projeto seria pior que depender do Docker.
 **Limites assumidos:** o kernel é compartilhado (para código hostil de verdade,
 VM ou gVisor); quem está no grupo `docker` equivale a root no host — o poll já
 tem esse poder, o agente não vê o socket; o agente tem rede para a API e pode
-mandar para fora o que enxerga, o que se restringe com uma rede docker própria.
+mandar para fora o que enxerga, e a rede `bridge` alcança também o host, a
+rede local e o metadata de nuvem — em produção, uma rede docker própria com
+saída restrita.
 
 ## O que decidi não fazer (por enquanto)
 
