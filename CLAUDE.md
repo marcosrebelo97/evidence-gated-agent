@@ -2,7 +2,7 @@
 
 Orquestrador que transforma uma solicitação **aprovada por um humano** em uma
 branch pronta para revisão, implementada por um agente de IA headless (Claude
-Code) num git worktree isolado. O orquestrador é determinístico; a IA fica só
+Code) num repositório próprio e isolado. O orquestrador é determinístico; a IA fica só
 no miolo. **Quem decide o push é o orquestrador, cruzando a autodeclaração do
 agente com evidência objetiva — nunca a IA.**
 
@@ -12,7 +12,7 @@ agente com evidência objetiva — nunca a IA.**
    orquestrador nunca faz merge, só push de branch própria (sem `--force`).
 2. **Publicação por evidência**: push exige status `implemented` + commit novo
    no git + working tree limpo + nenhum caminho proibido tocado (renames
-   inclusos) + todos os gates verdes num worktree novo, no commit exato. O push
+   inclusos) + todos os gates verdes num repositório novo, no commit exato. O push
    envia esse SHA, do clone principal. A decisão é uma função pura (`decide`)
    e deve continuar assim.
 3. **`blocked` é resultado de primeira classe**: solicitação ambígua vira
@@ -20,7 +20,7 @@ agente com evidência objetiva — nunca a IA.**
 4. **Idempotência**: ledger + lock de instância única — cada solicitação roda
    uma vez, uma instância por vez. Run interrompido vira `failed`, nunca fica
    `running` para sempre.
-5. **Isolamento e auditoria**: um worktree descartável por solicitação; cada
+5. **Isolamento e auditoria**: um repositório e um `HOME` descartáveis por solicitação; cada
    tentativa preserva solicitação, anexos, prompt, saída e stderr do agente,
    evidências e relatório em `<workDir>/runs/<id>/<tentativa>/`.
 6. **Sem shell**: todo processo externo é chamado com `spawn` e `shell: false`
@@ -29,10 +29,11 @@ agente com evidência objetiva — nunca a IA.**
    `sandboxEnv` (allowlist + git sem transporte). Só o orquestrador publica.
 8. **`workDir` fora do alvo e do orquestrador**: senão o agente herda o
    `CLAUDE.md` errado.
-9. **Git do orquestrador blindado**: todo comando passa por `SAFE_GIT` (sem
-   hooks, sem fsmonitor), o push vai para a URL anotada no `fetch` com
-   `--no-verify`, e o `.git/config` é conferido contra o snapshot depois do
-   agente e da verificação. Evidência e push derivam de um único SHA.
+9. **Nada compartilhado com o agente**: ele trabalha num repositório próprio
+   (nunca um worktree) e num `HOME` vazio. O orquestrador só traz o commit dele
+   por `git fetch`; git dentro de diretório escrito pelo agente roda com o
+   ambiente do sandbox e `GIT_CONFIG_GLOBAL=/dev/null`. Evidência, verificação e
+   push saem do SHA da base anotado no `fetch` e do SHA coletado.
 
 ## Stack
 
@@ -45,7 +46,7 @@ Vitest · tsx. Sem framework de agentes: o agente já é o Claude Code.
 - `src/sandbox.ts` — ambiente do agente e dos gates (allowlist, git sem transporte)
 - `src/config.ts` / `src/request.ts` — schemas Zod da configuração e da solicitação
 - `src/state/` — ledger (escrita atômica) e lock
-- `src/git.ts` / `src/scope.ts` — worktree, evidência no git, caminhos proibidos
+- `src/git.ts` / `src/scope.ts` — repositório do agente, coleta do SHA, evidência, caminhos proibidos
 - `src/agent/` — montagem do prompt a partir do roteiro e execução headless
 - `src/gates.ts` — gates e a função `decide`; a verificação no commit exato fica em `pipeline.ts`
 - `src/notify.ts` — console e Telegram

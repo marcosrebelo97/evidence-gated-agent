@@ -2,7 +2,7 @@
 
 Transforma uma solicitação **aprovada por um humano**, escrita em linguagem
 natural e com prints de tela, numa **branch pronta para revisão**, implementada
-por um agente de IA headless (Claude Code) num git worktree isolado.
+por um agente de IA headless (Claude Code) num repositório isolado.
 
 A IA escreve o código, mas **não decide nada sobre publicá-lo**. O push é
 decidido por um orquestrador determinístico, que cruza o que o agente declarou
@@ -35,12 +35,12 @@ produção. Este projeto organiza esse sistema em torno de três ideias:
 flowchart TD
     A["Solicitação em linguagem natural<br/>+ prints de tela"] --> B{"Aprovação humana"}
     B -- aprovada --> C["Poll agendado<br/>lock de instância única + ledger"]
-    C --> D["Worktree isolado<br/>branch agent/&lt;id&gt;-&lt;slug&gt;"]
+    C --> D["Repositório próprio do agente<br/>branch agent/&lt;id&gt;-&lt;slug&gt; · HOME vazio"]
     D --> E["Claude Code headless, em sandbox<br/>roteiro de 10 etapas"]
-    E -- "STATUS + REPORT.md" --> F{"Evidência no git<br/>commit · worktree limpo · escopo"}
+    E -- "STATUS + REPORT.md" --> F{"SHA coletado para o clone principal<br/>commit · sem sobras · escopo"}
     F -- blocked --> G["Perguntas ao solicitante"]
-    F -- "não confirma" --> I["Rejeitado<br/>worktree preservado"]
-    F -- confirma --> V["Worktree novo no commit exato<br/>setup + gates"]
+    F -- "não confirma" --> I["Rejeitado<br/>repositório preservado"]
+    F -- confirma --> V["Repositório novo só com o SHA<br/>setup + gates"]
     V -- "algum gate vermelho" --> I
     V -- "todos verdes" --> H["Push do SHA verificado"]
     G --> J["Notificação (console ou Telegram)"]
@@ -55,15 +55,18 @@ flowchart TD
    API é implementar `RequestSource`.
 2. **Detecção idempotente** — o `poll` (agendado no cron) pega um lock de
    instância única e consulta o ledger: cada solicitação roda uma única vez.
-3. **Isolamento** — um worktree descartável por solicitação, criado a partir da
-   branch base remota. O clone principal nunca muda de branch.
+3. **Isolamento** — cada solicitação ganha um repositório próprio e descartável
+   (não um worktree), com só o commit base, e um `HOME` vazio. O agente não
+   compartilha hooks, config, refs nem dotfiles com o orquestrador, e o
+   orquestrador nunca roda git com o próprio ambiente dentro dele.
 4. **Agente com roteiro** — o prompt não é "implemente isso": é o
    [roteiro de 10 etapas](playbook/agent-playbook.md), com critério explícito de
    ambiguidade, testes, type-check, code-review do próprio diff, commit
    cirúrgico e um contrato de saída legível por máquina.
-5. **Publicação por evidência** — o orquestrador confere o git, cria um
-   worktree novo no commit exato que o agente produziu, roda o setup e os gates
-   ali e, só se tudo estiver verde, faz push **daquele SHA**.
+5. **Publicação por evidência** — o orquestrador traz o `HEAD` do agente para o
+   clone principal, compara com o SHA da base anotado antes do agente rodar,
+   cria outro repositório novo só com esse commit, roda o setup e os gates ali
+   e, só se tudo estiver verde, faz push **daquele SHA**.
 6. **Desfecho** — relatório do agente e motivos da decisão vão para o
    responsável; a revisão e o merge são humanos.
 
@@ -75,22 +78,22 @@ agente é só a precondição; todo o resto é conferido:
 | Condição | Por que existe |
 | --- | --- |
 | Agente declarou `implemented` | Precondição — nunca suficiente sozinha |
-| Existe commit novo na branch | Pega o "fiz tudo" sem nada feito |
-| Worktree limpo | Se sobrou algo sem commit, o commit não é a entrega completa |
-| Nenhum caminho proibido no diff (renames inclusos) | `.env`, chaves e segredos ficam fora do alcance, mesmo renomeados |
-| Gates verdes num **worktree novo, no commit exato** | Arquivos ignorados que o agente deixou, ou testes que mexem na branch, não influenciam o veredito |
+| Existe commit novo sobre a base anotada | Pega o "fiz tudo" sem nada feito |
+| Nada sem commit no repositório do agente | Se sobrou algo, o commit não é a entrega completa |
+| Nenhum caminho proibido no diff contra a base anotada (renames inclusos) | `.env`, chaves e segredos ficam fora do alcance, mesmo renomeados ou escondidos movendo a ref da base |
+| Gates verdes num **repositório novo, só com o commit exato** | Arquivos ignorados que o agente deixou, ou testes que mexem na branch, não influenciam o veredito |
 | Pelo menos um gate configurado | Sem evidência, não há publicação — a config sem gates é recusada |
 
 O push envia o SHA verificado, não "o que a branch tiver agora".
 
-Arquivos que definem como os gates se comportam (`package.json`,
-`*.config.*`, `tsconfig*.json`) ou como os agentes trabalham (`CLAUDE.md`,
-`.claude/`) podem ser alterados — muitas vezes legitimamente —, mas aparecem
+Arquivos que definem como os gates se comportam (`package.json`, lockfiles,
+`*.config.*`, `tsconfig*.json`, `.husky/`) ou como os agentes trabalham
+(`CLAUDE.md`, `.claude/`) podem ser alterados — muitas vezes legitimamente —, mas aparecem
 destacados na notificação para o revisor (`attentionPaths`).
 
 ### Desfechos
 
-| Desfecho | Significado | Worktree |
+| Desfecho | Significado | Repositório do agente |
 | --- | --- | --- |
 | `published` | Evidência confirmada, SHA enviado | removido |
 | `ready` | Evidência confirmada, push desativado na config | mantido |
@@ -103,21 +106,25 @@ destacados na notificação para o revisor (`attentionPaths`).
 - **Humano nas pontas**: aprovação explícita na entrada; o orquestrador nunca
   faz merge, nunca usa `--force` e se recusa a fazer push na branch base.
 - **Sandbox do agente e dos gates**: os dois rodam com um ambiente mínimo
-  (`PATH`, `HOME`, locale, proxy e o que for liberado em `passEnv`) — tokens,
-  credenciais de nuvem e o agente SSH do orquestrador não chegam a eles. O git
-  lá dentro roda com `protocol.allow=never` e o push URL anulado, o que barra o
-  caminho direto (`git push` do agente). Um script escrito por ele pode desfazer
-  essas variáveis; contra isso vale o isolamento de sistema (abaixo).
-- **Hooks e config do repositório não executam do lado do orquestrador**: o
-  worktree compartilha `.git/hooks` e `.git/config` com o clone principal, e o
-  agente pode escrever nos dois. Todo comando git do orquestrador roda com
-  `core.hooksPath=/dev/null` e `core.fsmonitor=false`; o push vai para a URL
-  anotada antes do agente rodar, com `--no-verify`; e o `.git/config` é
-  comparado com um snapshot depois do agente e depois da verificação —
-  qualquer mudança é desfeita e o run não é publicado.
-- **Ferramentas restritas**: a configuração de exemplo libera só leitura,
-  edição, testes, type-check e git local; ignora hooks, permissões e servidores
-  MCP do usuário (`--setting-sources project`, `--strict-mcp-config`).
+  (`PATH`, locale, proxy e o que for liberado em `passEnv`) e um `HOME` vazio,
+  novo a cada run — tokens, credenciais de nuvem, o agente SSH e os dotfiles do
+  usuário (`~/.gitconfig`, `~/.npmrc`, `~/.ssh`) não chegam a eles. O Claude Code
+  autentica por `ANTHROPIC_API_KEY` ou `CLAUDE_CODE_OAUTH_TOKEN` liberados em
+  `agent.passEnv`. O git lá dentro roda com `protocol.allow=never`, o que barra
+  o `git push` do agente; um script escrito por ele pode desfazer essa variável,
+  e contra isso vale o isolamento de sistema (abaixo).
+- **Nada do repositório do agente executa do lado do orquestrador**: o agente
+  trabalha num repositório próprio, não num worktree — hooks, config, refs e o
+  ponteiro `.git` dele não são os do clone principal. O orquestrador traz o
+  commit com `git fetch` (o `upload-pack` não executa a config nem os hooks do
+  repositório servido) e, quando precisa rodar git lá dentro (`status`, o
+  checkout da verificação), usa o ambiente do sandbox, sem a config global do
+  usuário. Os próprios comandos git do orquestrador ainda rodam sem hooks e sem
+  fsmonitor, e o push usa `--no-verify`.
+- **Ferramentas restritas**: por padrão o agente ignora configurações e
+  servidores MCP do usuário (`--setting-sources project`,
+  `--strict-mcp-config`); a configuração de exemplo libera só leitura, edição,
+  testes, type-check e git local.
 - **Solicitação é dado, não instrução**: o texto vai delimitado no prompt, os
   placeholders são preenchidos numa única passada e qualquer variação da tag
   delimitadora dentro do texto é neutralizada. Anexos são conferidos pelo
@@ -126,9 +133,11 @@ destacados na notificação para o revisor (`attentionPaths`).
   timeout derruba o grupo de processos inteiro, o que o agente ou os gates
   deixarem rodando em segundo plano morre quando eles terminam, e parar o
   orquestrador (Ctrl+C, systemd, SIGHUP) também para o agente.
-- **Evidência presa a um SHA**: o orquestrador lê o `HEAD` uma vez e calcula
-  commits, arquivos alterados, verificação e push a partir desse SHA — mover a
-  branch depois não muda o que é checado nem o que é publicado.
+- **Evidência presa a dois SHAs**: o da base, anotado no `fetch` antes do agente
+  rodar, e o do agente, coletado uma vez para uma ref privada do clone
+  principal. Commits, arquivos alterados, verificação e push saem desses dois
+  — mover a branch ou a ref da base depois não muda o que é checado nem o que é
+  publicado.
 - **Idempotência e recuperação**: o ledger registra `running` antes de qualquer
   trabalho, com escrita atômica. Se o processo morrer no meio, o próximo poll
   marca aquele run como `failed` — nunca fica pendurado, nunca é retentado em
@@ -138,9 +147,11 @@ destacados na notificação para o revisor (`attentionPaths`).
 
 ### O que o sandbox não cobre
 
-O sandbox estreita o que o agente alcança; não substitui isolamento de sistema
-operacional. O agente precisa do `HOME` para as credenciais do Claude Code, e
-portanto consegue ler arquivos do usuário que roda o poll. Em produção:
+O sandbox e o repositório próprio fecham os caminhos que o agente tem a partir
+do lugar onde trabalha. Não substituem isolamento de sistema operacional: o
+agente roda com o mesmo usuário do poll e um script dele ainda pode escrever,
+por caminho absoluto, em qualquer arquivo desse usuário — inclusive no clone
+principal. Em produção:
 
 - rode o poll com um **usuário dedicado** (ou container), sem chaves além das
   necessárias;
@@ -170,6 +181,11 @@ Claude Code de verdade, num projeto Node de exemplo com um remote bare:
   10 testes, um subagente revisou o diff e encontrou três pontos, corrigidos
   antes do commit. A branch publicada passou 12/12 testes num clone limpo.
   Custo da sessão: US$ 0,59.
+- **REQ-101 de novo**, depois da troca do worktree por um repositório próprio
+  do agente: `published` em 2 min 19 s, com 11 testes novos e 13/13 verdes na
+  verificação. O commit chegou ao clone principal só por `git fetch`, o
+  repositório do agente foi apagado e o clone principal ficou intocado. Custo:
+  US$ 0,72.
 
 ## Auditoria
 
@@ -190,15 +206,22 @@ Cada tentativa guarda tudo o que é preciso para reconstruir a decisão:
     └── summary.json                 # o que foi notificado
 ```
 
-Um `retry` cria uma nova pasta de tentativa; a anterior é preservada. O
+Os repositórios dos agentes ficam em `workspaces/<id>` (com o `HOME` ao lado,
+em `<id>.home`), e o commit coletado de cada um fica no clone principal em
+`refs/evidence-gated-agent/<id>`. Um `retry` cria uma nova pasta de tentativa;
+a anterior é preservada. O
 `workDir` fica fora do repositório alvo e do orquestrador por padrão — o Claude
 Code lê `CLAUDE.md` subindo pelas pastas, e o agente não pode herdar as
 instruções erradas.
 
 ## Uso
 
-Requisitos: Node.js 20+, git e o [Claude Code](https://claude.com/claude-code)
-instalado e autenticado na máquina que roda o poll.
+Requisitos: Node.js 20+, git 2.29+ e o
+[Claude Code](https://claude.com/claude-code) instalado na máquina que roda o
+poll. Como o agente roda com um `HOME` vazio, a autenticação vem do ambiente:
+`ANTHROPIC_API_KEY`, ou `CLAUDE_CODE_OAUTH_TOKEN` gerado com
+`claude setup-token` para quem usa assinatura — os dois já estão em
+`agent.passEnv` no exemplo.
 
 ```bash
 npm install
@@ -216,8 +239,8 @@ Agendamento (a cada 15 minutos; o lock impede passadas sobrepostas):
 
 Para notificar no Telegram, use `"notifier": { "type": "telegram", "chatId": "<id>" }`
 e defina `TELEGRAM_BOT_TOKEN` no ambiente — o token nunca vai no arquivo de
-configuração, e o agente não o recebe. Se o Claude Code autentica por chave de
-API, libere-a só para o agente com `"agent": { "passEnv": ["ANTHROPIC_API_KEY"] }`.
+configuração, e o agente não o recebe. Um token de registry privado para o
+`npm ci` vai no `passEnv` do comando de setup, nunca no ambiente inteiro.
 
 Em [`examples/inbox`](examples/inbox) há três solicitações: uma clara e
 aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
@@ -226,22 +249,27 @@ aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
 ## Testes
 
 ```bash
-npm run check   # typecheck + 145 testes
+npm run check   # typecheck + 151 testes
 ```
 
 - **Unitários** para cada peça: a função `decide` em todas as combinações, o
   contrato do runner (crash, timeout, status inválido), o prompt (variações da
   tag delimitadora, placeholders), o sandbox (com git real: commit funciona,
   push não), ledger, lock (inclusive a troca de dono no meio da tomada),
-  escopo e o `exec` (grupo de processos, neto destacado).
+  escopo e o `exec` (grupo de processos, neto destacado, processo deixado em
+  segundo plano).
+- **Git real contra cada ataque da revisão**: hooks plantados no repositório do
+  agente, remote e fsmonitor reescritos, a ref da base movida para esconder um
+  `.env`, a branch movida depois da coleta, e mais de um push URL.
 - **Pipeline** com fakes para todos os desfechos, idempotência, lock,
   recuperação de crash, falha isolada por solicitação e anexos fora da pasta
   ou via symlink.
-- **Ponta a ponta com git real**: remote bare, worktrees e pushes reais, e um
+- **Ponta a ponta com git real**: remote bare, repositórios e pushes reais, e um
   [agente falso](test/fixtures/fake-agent.mjs) que se comporta como o
   `claude -p`. Cobre cada desfecho, inclusive um agente que tenta fazer push
   sozinho e ler segredos, um que deixa um arquivo ignorado para "ajudar" o
-  gate, e um que esconde um `.env` — sem gastar crédito de API.
+  gate, um que esconde um `.env` movendo a base, um que planta hooks e config,
+  e o `HOME` isolado — sem gastar crédito de API.
 
 ## Estrutura
 
@@ -252,7 +280,7 @@ src/
 ├── gates.ts        # gates + decide()
 ├── sandbox.ts      # ambiente do agente e dos gates
 ├── agent/          # prompt a partir do roteiro + runner headless
-├── git.ts          # worktrees, evidência no git, push do SHA
+├── git.ts          # repositórios do agente, coleta do SHA, evidência, push
 ├── scope.ts        # caminhos proibidos e de atenção, nome de branch
 ├── state/          # ledger e lock
 ├── source.ts       # fonte de solicitações (pasta)
@@ -264,13 +292,15 @@ playbook/agent-playbook.md   # o roteiro que o agente segue
 
 ## Limitações conhecidas e próximos passos
 
-- Uma solicitação por vez. Paralelizar exige uma fila e um limite de worktrees
-  simultâneos — o ledger e o lock já isolam o estado por solicitação.
+- Uma solicitação por vez. Paralelizar exige uma fila e um limite de
+  repositórios simultâneos — o ledger e o lock já isolam o estado por solicitação.
 - O desfecho é um push de branch; abrir o PR automaticamente, com o relatório
   como descrição, é o próximo passo natural.
-- A verificação refaz o setup num worktree novo: mais lenta, mas é o que
-  garante que o commit publicado é o mesmo que passou nos gates, num checkout
-  limpo.
+- Cada run copia o repositório (o do agente e o da verificação) e refaz o
+  setup: mais lento e mais disco que um worktree, mas é o que separa o agente
+  do clone principal e garante que o commit publicado é o mesmo que passou nos
+  gates, num checkout limpo. Em repositórios grandes, um `--filter=blob:none`
+  ou um cache de dependências por lockfile são o próximo ajuste.
 - Métricas que valem acompanhar: taxa de `published` aceito sem retrabalho na
   revisão, lead time da aprovação até a branch, apontamentos da revisão humana
   por entrega e taxa de `blocked` legítimo.

@@ -24,7 +24,7 @@ const notifierSchema = z.discriminatedUnion('type', [
 ]);
 
 export const configSchema = z.object({
-  /** Main clone of the target repository. Only worktrees are created from it. */
+  /** Main clone of the target repository. The agent never works in it: each run gets its own repository. */
   repoPath: z.string().min(1),
   remote: z.string().min(1).default('origin'),
   baseBranch: z.string().min(1).default('main'),
@@ -35,7 +35,7 @@ export const configSchema = z.object({
   /** Where approved requests are read from (file source). */
   inboxDir: z.string().min(1),
   /**
-   * Ledger, lock, run artifacts and worktrees. Defaults to a per-repository folder under
+   * Ledger, lock, run artifacts, agent repositories and their HOMEs. Defaults to a per-repository folder under
    * ~/.local/state. Never inside repoPath or this orchestrator: Claude Code reads CLAUDE.md
    * from parent directories, so the agent would pick up the wrong instructions.
    */
@@ -117,7 +117,7 @@ export function parseConfig(raw: unknown, baseDir: string): ResolvedConfig {
   const workDir = config.workDir ? resolve(baseDir, config.workDir) : defaultWorkDir(repoPath);
 
   if (isInside(repoPath, workDir)) {
-    throw new Error(`workDir (${workDir}) must be outside repoPath: worktrees cannot live inside the repository`);
+    throw new Error(`workDir (${workDir}) must be outside repoPath: agent repositories cannot live inside the repository`);
   }
   if (isInside(ORCHESTRATOR_ROOT, workDir)) {
     throw new Error(

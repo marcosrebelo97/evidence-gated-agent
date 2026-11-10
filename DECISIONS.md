@@ -9,7 +9,7 @@ a prova.
 
 ## 1. Orquestrador determinístico, IA só no miolo
 
-Detecção, worktree, gates, push e notificação são código comum. O LLM entra
+Detecção, repositórios, gates, push e notificação são código comum. O LLM entra
 apenas onde há raciocínio: interpretar o pedido e os prints, e implementar.
 
 **Por quê:** cada etapa determinística é testável, auditável e não custa token.
@@ -31,13 +31,13 @@ O agente escreve uma palavra em `STATUS` e um relatório em pt-BR em
 `REPORT.md`, na pasta do run (liberada com `--add-dir`), nunca no repositório.
 
 **Por quê:** é o contrato mais simples que um humano consegue depurar com `cat`.
-Ficar fora do worktree evita que o contrato vá parar num commit. Qualquer
+Ficar fora do repositório evita que o contrato vá parar num commit. Qualquer
 desvio (arquivo ausente, valor inválido, crash, timeout, sessão com erro) vira
 `failed` — o contrato é estrito porque a decisão depende dele.
 
 ## 4. A autodeclaração é precondição, não prova
 
-O push exige `implemented` **e** commit novo **e** worktree limpo **e** nenhum
+O push exige `implemented` **e** commit novo **e** nada sem commit **e** nenhum
 caminho proibido **e** gates verdes reexecutados pelo orquestrador. A decisão é
 uma função pura.
 
@@ -47,7 +47,7 @@ alteração esquecida fora do commit (os testes rodariam sobre algo diferente do
 publicado), toque em segredo, suíte vermelha. Ser pura permite testar todas as
 combinações sem git nem processo.
 
-## 5. Worktree limpo é exigido
+## 5. Nada pode sobrar sem commit
 
 Se sobrar arquivo sem commit, o resultado é `rejected`, mesmo com gates verdes.
 
@@ -58,7 +58,7 @@ a que o agente testou.
 ## 6. Gates rodam até o fim; e só quando vale
 
 Todos os gates rodam, mesmo após a primeira falha. Mas eles nem começam se a
-evidência barata (status, commit, worktree, escopo) já descarta a publicação.
+evidência barata (status, commit, sobras, escopo) já descarta a publicação.
 
 **Por quê:** quem revisa um `rejected` quer ver tudo o que está vermelho de uma
 vez. E não faz sentido gastar minutos de suíte num run que já não pode ser
@@ -111,11 +111,11 @@ remota. O push nunca usa `--force` e recusa a branch base.
 Sem `--force`, um retry de algo já publicado falha em vez de reescrever uma
 branch que alguém pode estar revisando.
 
-## 12. Verificar num worktree novo, no commit exato, e publicar esse SHA
+## 12. Verificar num checkout novo, no commit exato, e publicar esse SHA
 
-Depois do agente, o orquestrador anota o SHA, cria um worktree destacado nele,
-roda o setup e os gates ali, e faz push exatamente daquele SHA, a partir do
-clone principal.
+Depois do agente, o orquestrador anota o SHA, cria um checkout novo só com ele
+(hoje um repositório à parte; veja a decisão 16), roda o setup e os gates ali,
+e faz push exatamente daquele SHA, a partir do clone principal.
 
 **Por quê:** na primeira versão, os gates rodavam no worktree do próprio agente,
 e o push enviava o que a branch apontasse no momento. Dois problemas: testes
@@ -123,8 +123,8 @@ escritos pelo agente podiam mover a branch durante os gates, e arquivos
 ignorados deixados por ele (um gerado, um `node_modules` alterado) podiam fazer
 a suíte passar num estado que quebra num checkout limpo. O custo é refazer o
 setup; o ganho é que o commit publicado é exatamente o que passou nos gates,
-num checkout limpo. Fazer o push do clone
-principal também resolve o remote como configurado — no smoke test real, um
+num checkout limpo. Fazer o push do clone principal também resolve o remote
+como configurado — no smoke test real, um
 remote com caminho relativo quebrava o push feito de dentro do worktree.
 
 ## 13. Sandbox de ambiente para o agente e para os gates
@@ -140,10 +140,9 @@ sem transporte para os comandos git do agente, o caminho direto fecha.
 
 **Limite assumido:** variáveis de ambiente valem para o processo, não contra
 ele: um script do agente pode rodar `env -u GIT_CONFIG_COUNT git push` e o
-transporte volta. Por isso a segurança da publicação não se apoia aqui
-(veja a decisão 16), e o agente precisa do `HOME` para as credenciais do Claude
-Code. Nada disso substitui usuário dedicado ou container — o README diz isso
-explicitamente.
+transporte volta. Por isso a segurança da publicação não se apoia aqui (veja
+as decisões 16 e 18). Nada disso substitui usuário dedicado ou container — o
+README diz isso explicitamente.
 
 O setup que roda **antes** do agente, sobre a base intacta, mantém o transporte
 git (dependências via git quebrariam sem ele); o setup da verificação, que roda
@@ -162,39 +161,75 @@ nomes com acento (`"\303\247/.env"` não casava com nenhum padrão).
 O padrão é uma pasta por repositório em `~/.local/state`; dentro do alvo ou do
 orquestrador, a configuração é recusada.
 
-**Por quê:** o Claude Code lê `CLAUDE.md` subindo pelas pastas. Com os
-worktrees dentro do orquestrador, o agente recebia as instruções do
+**Por quê:** o Claude Code lê `CLAUDE.md` subindo pelas pastas. Com o
+diretório de trabalho do agente dentro do orquestrador, o agente recebia as instruções do
 orquestrador como se fossem do projeto alvo.
 
-## 16. Hooks e config compartilhados não executam do lado do orquestrador
+## 16. O agente trabalha num repositório próprio, não num worktree
 
-Todo comando git do orquestrador roda com `-c core.hooksPath=/dev/null -c
-core.fsmonitor=false`. O `fetch` anota o push URL antes do agente; o push usa
-essa URL com `--no-verify`. O `.git/config` vira snapshot antes do agente e é
-comparado depois dele e depois da verificação: se mudou, é restaurado e o run
-termina `failed` (ou `rejected`, com o gate `git-config-integrity`).
+Cada solicitação ganha um repositório novo (`git init` + `fetch` do SHA da
+base, vindo do clone principal). Quando o agente termina, o orquestrador traz o
+`HEAD` dele com `git fetch` para `refs/evidence-gated-agent/<id>` no clone
+principal; a verificação acontece em outro repositório novo, só com esse
+commit. O orquestrador nunca roda git com o próprio ambiente dentro de um
+diretório que o agente escreveu: o `status` e o checkout da verificação usam o
+ambiente do sandbox, sem a config global do usuário.
 
-**Por quê:** a re-revisão mostrou que o worktree compartilha `.git/hooks` e
-`.git/config` com o clone principal. O agente podia plantar um `post-checkout`
-(que rodaria no `worktree add` da verificação, com o ambiente completo do
-orquestrador), um `pre-push`, trocar `remote.origin.url` para publicar em outro
-lugar, ou pôr um comando em `core.fsmonitor` que o próximo `git status` do
-orquestrador executaria. Repositórios com husky (`core.hooksPath=.husky`) caem
-no mesmo caso, já que `.husky/` é editável pelo agente. As três medidas fecham
-os caminhos de execução; o snapshot garante que o clone principal termina como
-começou.
+**Por quê:** a re-revisão mostrou que o worktree compartilhava `.git/hooks`,
+`.git/config` e refs com o clone principal. O agente podia plantar um
+`post-checkout` (que rodaria no `worktree add` da verificação, com o ambiente
+completo do orquestrador) ou um `pre-push`, trocar `remote.origin.url`, pôr um
+comando em `core.fsmonitor` que o próximo `git status` executaria, ou apontar o
+arquivo `.git` do worktree para um diretório git forjado. Repositórios com
+husky (`core.hooksPath=.husky`) caíam no mesmo caso.
 
-## 17. Toda evidência sai de um único SHA; nada do agente sobrevive a ele
+A primeira correção foi pontual: hooks e fsmonitor desligados, push URL anotado
+antes do agente, snapshot do `.git/config` restaurado depois dele. O review
+seguinte mostrou que cada medida tapava uma peça compartilhada e deixava outras
+abertas — refs, o ponteiro `.git`, um config somente leitura que a restauração
+não conseguia desfazer, um snapshot que só existia em memória. Separar os
+repositórios tira o estado compartilhado do caminho, e o mecanismo de
+snapshot deixou de existir. `upload-pack`, o lado do git que serve um `fetch`,
+é feito para repositórios não confiáveis e não executa a config nem os hooks
+de quem serve.
 
-O `HEAD` é lido uma vez; `commitsAhead`, `changedFiles`, a verificação e o push
-recebem esse SHA (e recusam qualquer coisa que não seja um SHA completo). O
-`exec` ganhou `killGroupOnExit`, usado para o agente e para os gates.
+**Custo:** copiar o repositório a cada run (agente e verificação) é mais lento
+e ocupa mais disco que um worktree. Num repositório grande, um clone parcial
+(`--filter=blob:none`) é o ajuste natural.
 
-**Por quê:** antes, o diff e a contagem de commits liam a branch no momento, e o
-SHA era lido por último. Um processo deixado em segundo plano pelo agente podia
-mover a branch entre as checagens — o diff conferido não seria o do commit
-verificado. Matar o grupo de processos na saída normal tira esse processo de
-cena; derivar tudo do SHA torna a ordem irrelevante.
+## 17. Toda evidência sai de dois SHAs anotados; nada do agente sobrevive a ele
+
+O `fetch` anota o SHA da base antes do agente rodar; a coleta anota o SHA do
+agente uma vez. `commitsAhead`, `changedFiles`, a verificação e o push recebem
+esses SHAs (e recusam o que não for um SHA completo). O `exec` ganhou
+`killGroupOnExit`, usado para o agente e para os gates.
+
+**Por quê:** antes, o diff e a contagem de commits liam refs no momento. Um
+processo deixado em segundo plano podia mover a branch entre as checagens, e o
+agente podia mover `origin/main` para cima de um commit que mexia em `.env` —
+o diff contra a base movida mostraria só o commit inocente seguinte, e os dois
+seriam publicados. Comparar contra SHAs anotados torna a ordem e as refs
+irrelevantes; matar o grupo de processos na saída normal tira o processo
+residual de cena.
+
+## 18. `HOME` vazio para o agente, o setup e os gates
+
+Por padrão (`isolateHome`), cada run recebe um `HOME` novo e vazio ao lado do
+seu repositório, e a verificação recebe outro; os dois são apagados com o
+repositório. O Claude Code autentica por `ANTHROPIC_API_KEY` ou
+`CLAUDE_CODE_OAUTH_TOKEN` (de `claude setup-token`), liberados em
+`agent.passEnv`. `XDG_CONFIG_HOME` e `CLAUDE_CONFIG_DIR` saíram da allowlist.
+
+**Por quê:** com o `HOME` do usuário, um script de teste do agente podia
+escrever no `~/.gitconfig` um `pushInsteadOf` ou um `credential.helper` — e
+todo comando git do orquestrador lê esse arquivo com o ambiente completo. O
+mesmo vale para `~/.npmrc`, `~/.ssh` e `~/.claude`. Um `HOME` por run também
+impede que um run contamine o seguinte.
+
+**Limite assumido:** o agente roda com o mesmo usuário do poll. Um script dele
+ainda pode escrever por caminho absoluto num arquivo desse usuário. O que este
+projeto fecha são os caminhos a partir de onde o agente trabalha; o resto é
+papel do usuário dedicado ou do container.
 
 ## O que decidi não fazer (por enquanto)
 

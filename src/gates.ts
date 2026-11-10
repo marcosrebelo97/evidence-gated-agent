@@ -96,7 +96,7 @@ export function decide(e: Evidence): Decision {
   if (e.commitsAhead === 0) reasons.push('agent declared implemented but there is no new commit');
   else if (!e.commit) reasons.push('the verified commit id was not recorded');
   if (e.dirtyFiles.length > 0) {
-    reasons.push(`uncommitted changes left in the worktree (gates would not reflect the commit): ${e.dirtyFiles.join(', ')}`);
+    reasons.push(`uncommitted changes left in the agent repository (gates would not reflect the commit): ${e.dirtyFiles.join(', ')}`);
   }
   if (e.forbiddenTouched.length > 0) reasons.push(`forbidden paths touched: ${e.forbiddenTouched.join(', ')}`);
   for (const gate of e.gates.filter((g) => !g.passed)) {

@@ -16,9 +16,9 @@ citando arquivo e linha quando enfraquecido:
    Algum caminho faz merge, push com `--force` ou push na branch base?
 2. **Publicação por evidência** — `decide` continua pura? Existe algum caminho
    até `git.push` que não passe por `decide(...).publish === true`? Alguma
-   condição (commit novo, worktree limpo, caminhos proibidos, gates) foi
+   condição (commit novo, nada sem commit, caminhos proibidos, gates) foi
    removida ou afrouxada? A lista vazia de gates continua bloqueando? Os gates
-   continuam rodando num worktree novo no commit anotado, e o push continua
+   continuam rodando num repositório novo no commit anotado, e o push continua
    enviando esse SHA (não uma ref)?
 3. **`blocked`** — continua sendo um desfecho próprio, sem push e com o
    relatório chegando ao solicitante?
@@ -36,11 +36,11 @@ citando arquivo e linha quando enfraquecido:
    transporte?
 8. **`workDir`** — a recusa de `workDir` dentro do alvo ou do orquestrador
    continua valendo?
-9. **Git do orquestrador** — algum comando git novo deixou de passar por
-   `SAFE_GIT`? O push continua indo para a URL anotada no `fetch`, com
-   `--no-verify`? O snapshot do `.git/config` continua conferido depois do
-   agente e da verificação? Alguma evidência voltou a ler a branch em vez do
-   SHA?
+9. **Nada compartilhado** — algum caminho voltou a usar `git worktree` ou a
+   rodar git com o ambiente do orquestrador dentro do repositório do agente ou
+   da verificação? Algum comando git novo deixou de passar por `SAFE_GIT`?
+   Alguma evidência voltou a ler uma ref (`origin/main`, a branch) em vez dos
+   SHAs anotados? O `HOME` do agente e dos gates continua isolado por padrão?
 
 Depois verifique se cada comportamento novo tem teste (unitário em
 `test/*.test.ts` ou ponta a ponta em `test/e2e.test.ts`) e rode
