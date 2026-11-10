@@ -200,6 +200,12 @@ Claude Code de verdade, num projeto Node de exemplo com um remote bare:
   verificação. O commit chegou ao clone principal só por `git fetch`, o
   repositório do agente foi apagado e o clone principal ficou intocado. Custo:
   US$ 0,72.
+- **REQ-101 com a configuração padrão** (`HOME` isolado, autenticação só por
+  `CLAUDE_CODE_OAUTH_TOKEN`): `published` em 51 s, com 8 testes novos e 10/10
+  verdes na verificação, a US$ 0,16. O token não aparece em nenhum arquivo do
+  run, e o `HOME` e o repositório do agente foram apagados no fim. Nessa
+  rodada o agente fez a revisão do diff sozinho, sem subagente — parte da
+  diferença de custo vem daí.
 
 ## Auditoria
 
