@@ -44,7 +44,9 @@ export interface AgentRunnerSettings {
   /** Remote whose push is disabled inside the agent's environment. */
   remote: string;
   passEnv?: readonly string[];
-  gitAuthor?: { name: string; email: string } | undefined;
+  gitAuthor: { name: string; email: string };
+  /** Fixed variables for the agent, e.g. a shared package cache. */
+  extraEnv?: Record<string, string>;
 }
 
 /** Subset of `claude -p --output-format json` that the orchestrator records. */
@@ -90,20 +92,23 @@ export function createAgentRunner(exec: Exec, settings: AgentRunnerSettings): Ag
       await rm(statusPath, { force: true });
       await rm(reportPath, { force: true });
 
-      const author: Record<string, string> = settings.gitAuthor
-        ? {
-            GIT_AUTHOR_NAME: settings.gitAuthor.name,
-            GIT_AUTHOR_EMAIL: settings.gitAuthor.email,
-            GIT_COMMITTER_NAME: settings.gitAuthor.name,
-            GIT_COMMITTER_EMAIL: settings.gitAuthor.email,
-          }
-        : {};
+      const author: Record<string, string> = {
+        GIT_AUTHOR_NAME: settings.gitAuthor.name,
+        GIT_AUTHOR_EMAIL: settings.gitAuthor.email,
+        GIT_COMMITTER_NAME: settings.gitAuthor.name,
+        GIT_COMMITTER_EMAIL: settings.gitAuthor.email,
+      };
 
       const result = await exec(settings.command, [...settings.args, '--add-dir', runDir], {
         cwd: workspace,
         input: prompt,
         timeoutMs: settings.timeoutMs,
-        env: sandboxEnv({ remote: settings.remote, passEnv: settings.passEnv ?? [], home, extra: author }),
+        env: sandboxEnv({
+          remote: settings.remote,
+          passEnv: settings.passEnv ?? [],
+          home,
+          extra: { ...settings.extraEnv, ...author },
+        }),
         inheritEnv: false,
         killGroupOnExit: true,
       });

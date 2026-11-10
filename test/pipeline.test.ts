@@ -70,7 +70,7 @@ describe('pollOnce — publication', () => {
     expect(trusted).toEqual([true, false]);
   });
 
-  it('gives each run a fresh HOME of its own, and another one to the verification', async () => {
+  it('gives the agent and the verification fresh HOMEs; the trusted setup keeps the user HOME', async () => {
     const homes: { step: string; home: string | undefined }[] = [];
     h.deps.runSetup = async (_dir, { trusted, home }) => {
       homes.push({ step: trusted ? 'setup' : 'verify-setup', home });
@@ -86,7 +86,8 @@ describe('pollOnce — publication', () => {
     const workspaces = join(h.config.workDir, 'workspaces');
     expect(h.agent.homes).toEqual([join(workspaces, 'REQ-1.home')]);
     expect(homes).toEqual([
-      { step: 'setup', home: join(workspaces, 'REQ-1.home') },
+      // The untouched base is trusted: the user's HOME, for private dependencies.
+      { step: 'setup', home: undefined },
       { step: 'verify-setup', home: join(workspaces, 'REQ-1.verify.home') },
       { step: 'gates', home: join(workspaces, 'REQ-1.verify.home') },
     ]);

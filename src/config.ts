@@ -76,8 +76,8 @@ export const configSchema = z.object({
       .array(z.string())
       .default(['-p', '--output-format', 'json', '--setting-sources', 'project', '--strict-mcp-config']),
     timeoutMs: z.number().int().positive().default(30 * 60_000),
-    /** Variables the agent needs beyond the sandbox baseline, e.g. ANTHROPIC_API_KEY. */
-    passEnv: z.array(z.string().min(1)).default([]),
+    /** Variables the agent needs beyond the sandbox baseline. By default, how Claude Code authenticates. */
+    passEnv: z.array(z.string().min(1)).default(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']),
     playbook: z.string().min(1).optional(),
     /** Author of the agent's commits. Required in practice: an isolated HOME has no git identity. */
     gitAuthor: z

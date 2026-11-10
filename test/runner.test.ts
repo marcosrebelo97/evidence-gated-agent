@@ -25,7 +25,13 @@ function fakeExec(files: Record<string, string>, result: Partial<ExecResult> = {
   return fn;
 }
 
-const settings = { command: 'claude', args: ['-p', '--output-format', 'json'], timeoutMs: 60_000, remote: 'origin' };
+const settings = {
+  command: 'claude',
+  args: ['-p', '--output-format', 'json'],
+  timeoutMs: 60_000,
+  remote: 'origin',
+  gitAuthor: { name: 'evidence-gated-agent', email: 'agent@example.com' },
+};
 
 describe('agent runner', () => {
   it('passes the prompt on stdin and grants only the run directory', async () => {

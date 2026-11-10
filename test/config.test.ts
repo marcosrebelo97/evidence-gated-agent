@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_PLAYBOOK, defaultWorkDir, ORCHESTRATOR_ROOT, parseConfig } from '../src/config.js';
+import { checkAgentAuth } from '../src/deps.js';
 import { isApproved, supportRequestSchema } from '../src/request.js';
 
 const minimal = {
@@ -56,6 +57,27 @@ describe('parseConfig', () => {
 
   it('rejects a branch prefix that could collide with real branches', () => {
     expect(() => parseConfig({ ...minimal, branchPrefix: 'main' }, '/srv')).toThrow();
+  });
+});
+
+describe('checkAgentAuth', () => {
+  const claude = parseConfig(minimal, '/srv/runner');
+
+  it('fails at start when an isolated Claude Code has no way to authenticate', () => {
+    expect(() => checkAgentAuth(claude, {})).toThrow(/CLAUDE_CODE_OAUTH_TOKEN/);
+    // Set in the environment but not passed to the agent is the same as absent.
+    const notPassed = parseConfig({ ...minimal, agent: { passEnv: [] } }, '/srv/runner');
+    expect(() => checkAgentAuth(notPassed, { ANTHROPIC_API_KEY: 'k' })).toThrow();
+  });
+
+  it('accepts an API key or an OAuth token passed to the agent', () => {
+    expect(() => checkAgentAuth(claude, { ANTHROPIC_API_KEY: 'k' })).not.toThrow();
+    expect(() => checkAgentAuth(claude, { CLAUDE_CODE_OAUTH_TOKEN: 't' })).not.toThrow();
+  });
+
+  it('does not apply without isolation or to another agent command', () => {
+    expect(() => checkAgentAuth(parseConfig({ ...minimal, isolateHome: false }, '/srv/runner'), {})).not.toThrow();
+    expect(() => checkAgentAuth(parseConfig({ ...minimal, agent: { command: 'node' } }, '/srv/runner'), {})).not.toThrow();
   });
 });
 

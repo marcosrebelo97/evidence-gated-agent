@@ -18,7 +18,8 @@ export interface PipelineDeps {
   agent: AgentRunner;
   /**
    * `trusted`: the workspace holds only the untouched base (before the agent runs), so the
-   * setup may use git transports, e.g. for git dependencies. On the agent's commit it may not.
+   * setup may use git transports and the user's HOME, e.g. for private dependencies.
+   * On the agent's commit it may not: it gets the isolated `home` instead.
    */
   runSetup: (dir: string, options: { trusted: boolean; home: string | undefined }) => Promise<GateResult[]>;
   runGates: (dir: string, options: { home: string | undefined }) => Promise<GateResult[]>;
@@ -38,6 +39,8 @@ export function runnerPaths(workDir: string) {
     verification: (id: string) => join(workDir, 'workspaces', `${id}.verify`),
     /** The isolated HOME that goes with a workspace or verification directory. */
     home: (dir: string) => `${dir}.home`,
+    /** npm cache shared by isolated runs, so each fresh HOME does not download everything again. */
+    npmCache: join(workDir, 'cache', 'npm'),
   };
 }
 
@@ -120,10 +123,10 @@ async function execute(
   const baseSha = await git.fetch();
   // A previous attempt may have kept its workspace for inspection; this starts clean.
   await git.createWorkspace(workspace, branch);
-  const home = await freshHome(workspace, deps);
 
-  // Still only the base here: nothing of the agent's has run yet.
-  const setup = await deps.runSetup(workspace, { trusted: true, home });
+  // Still only the base here: nothing of the agent's has run yet, so the setup keeps the
+  // user's HOME (SSH keys, registry tokens for private dependencies).
+  const setup = await deps.runSetup(workspace, { trusted: true, home: undefined });
   await writeJson(join(runDir, 'setup.json'), setup);
   const brokenSetup = setup.filter((step) => !step.passed);
   if (brokenSetup.length > 0) {
@@ -148,6 +151,7 @@ async function execute(
   });
   await writeFile(join(runDir, 'prompt.md'), prompt, 'utf8');
 
+  const home = await freshHome(workspace, deps);
   deps.log(`[${request.id}] agent started on ${branch}`);
   const run = await deps.agent.run({ workspace, runDir, prompt, home });
   await writeFile(join(runDir, 'agent-output.json'), run.rawOutput, 'utf8');
