@@ -1,0 +1,125 @@
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, expect, it } from 'vitest';
+import { parseConfig } from '../src/config.js';
+import { createDefaultDeps } from '../src/deps.js';
+import { exec } from '../src/exec.js';
+import { pollOnce, runnerPaths } from '../src/pipeline.js';
+import { Ledger } from '../src/state/ledger.js';
+import { createGitFixture, git, remoteBranches } from './helpers/git-fixture.js';
+import { APPROVAL, CollectingNotifier } from './helpers/fakes.js';
+
+const FAKE_AGENT = fileURLToPath(new URL('./fixtures/fake-agent.mjs', import.meta.url));
+const TSX = fileURLToPath(new URL('../node_modules/.bin/tsx', import.meta.url));
+const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+const BRANCH = 'agent/REQ-1-exportar-relatorio';
+
+/** The gate the orchestrator re-runs: the feature file must exist with the right content. */
+const featureGate = {
+  name: 'feature-check',
+  command: process.execPath,
+  args: ['-e', 'const fs=require("fs");process.exit(fs.existsSync("feature.txt")&&fs.readFileSync("feature.txt","utf8")==="ok\\n"?0:1)'],
+};
+
+async function setup(scenario: string) {
+  const fixture = await createGitFixture();
+  const inboxDir = join(fixture.root, 'inbox');
+  await mkdir(inboxDir);
+  await writeFile(
+    join(inboxDir, 'REQ-1.json'),
+    JSON.stringify({
+      id: 'REQ-1',
+      title: 'Exportar relatório',
+      description: 'Adicionar exportação do relatório.',
+      requestedBy: 'ana',
+      approval: APPROVAL,
+    }),
+  );
+  const rawConfig = {
+    repoPath: fixture.clone,
+    inboxDir,
+    workDir: join(fixture.root, 'work'),
+    agent: {
+      command: process.execPath,
+      args: [FAKE_AGENT, scenario, '-p', '--output-format', 'json'],
+      timeoutMs: 30_000,
+      gitAuthor: { name: 'support-agent', email: 'support-agent@example.com' },
+    },
+    gates: [featureGate],
+  };
+  const config = parseConfig(rawConfig, fixture.root);
+  const notifier = new CollectingNotifier();
+  const deps = { ...(await createDefaultDeps(config)), notifier, log: () => undefined };
+  return { fixture, config, rawConfig, notifier, deps };
+}
+
+describe('end to end with real git and a fake agent', () => {
+  it('publishes the agent branch, authored by the agent, without touching the main clone', async () => {
+    const { fixture, config, notifier, deps } = await setup('implement');
+    const report = await pollOnce(deps);
+
+    expect(report.processed[0]).toMatchObject({ outcome: 'published', costUsd: 0.12 });
+    expect(remoteBranches(fixture.remote).sort()).toEqual([BRANCH, 'main'].sort());
+    expect(git(fixture.remote, 'log', '-1', '--format=%an', BRANCH).trim()).toBe('support-agent');
+    expect(git(fixture.clone, 'branch', '--show-current').trim()).toBe('main');
+    expect(git(fixture.clone, 'status', '--porcelain').trim()).toBe('');
+    expect(existsSync(runnerPaths(config.workDir).worktree('REQ-1'))).toBe(false);
+    expect(notifier.sent[0]?.report).toContain('feature.txt criado');
+  });
+
+  it('publishes nothing for an ambiguous request and carries the questions', async () => {
+    const { fixture, notifier, deps } = await setup('block');
+    const [run] = (await pollOnce(deps)).processed;
+    expect(run?.outcome).toBe('blocked');
+    expect(remoteBranches(fixture.remote)).toEqual(['main']);
+    expect(notifier.sent[0]?.report).toContain('Qual data');
+  });
+
+  it.each([
+    ['claim-without-commit', /no new commit/],
+    ['break-gate', /gate "feature-check" failed/],
+    ['leave-dirty', /uncommitted changes .*scratch\.txt/],
+    ['touch-env', /forbidden paths touched: \.env/],
+  ])('rejects "%s" and keeps the worktree for inspection', async (scenario, reason) => {
+    const { fixture, config, deps } = await setup(scenario);
+    const [run] = (await pollOnce(deps)).processed;
+    expect(run?.outcome).toBe('rejected');
+    expect(run?.reasons.join('\n')).toMatch(reason);
+    expect(remoteBranches(fixture.remote)).toEqual(['main']);
+    expect(existsSync(runnerPaths(config.workDir).worktree('REQ-1'))).toBe(true);
+  });
+
+  it('turns an agent crash into failed', async () => {
+    const { fixture, deps } = await setup('crash');
+    const [run] = (await pollOnce(deps)).processed;
+    expect(run).toMatchObject({ outcome: 'failed', reasons: ['agent exited with code 1'] });
+    expect(remoteBranches(fixture.remote)).toEqual(['main']);
+  });
+
+  it('runs once, and again only after an explicit retry, keeping both audit trails', async () => {
+    const { config, deps } = await setup('claim-without-commit');
+    await pollOnce(deps);
+    expect((await pollOnce(deps)).alreadyHandled).toEqual(['REQ-1']);
+
+    await (await Ledger.open(runnerPaths(config.workDir).ledger)).remove('REQ-1');
+    const retried = await pollOnce(deps);
+    expect(retried.processed).toHaveLength(1);
+    expect(await readdir(join(config.workDir, 'runs', 'REQ-1'))).toHaveLength(2);
+  });
+
+  it('works through the CLI', async () => {
+    const { fixture, rawConfig } = await setup('implement');
+    const configFile = join(fixture.root, 'agent.config.json');
+    await writeFile(configFile, JSON.stringify(rawConfig));
+
+    const poll = await exec(TSX, [CLI, 'poll', '--config', configFile], { cwd: fixture.root });
+    expect(poll.code).toBe(0);
+    expect(JSON.parse(poll.stdout.trim().split('\n').at(-1) as string)).toMatchObject({ processed: { published: 1 } });
+
+    const status = await exec(TSX, [CLI, 'status', '--config', configFile], { cwd: fixture.root });
+    expect(status.stdout).toContain('REQ-1');
+    expect(status.stdout).toContain('published');
+  });
+});
