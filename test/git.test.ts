@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { exec } from '../src/exec.js';
@@ -40,6 +40,29 @@ describe('git ops (real git)', () => {
     expect(await ops.commitsAhead(worktree)).toBe(1);
     expect(await ops.dirtyFiles(worktree)).toEqual([]);
     expect(await ops.changedFiles(worktree)).toEqual(['feature.ts']);
+  });
+
+  it('reports both sides of a rename, so a moved secret cannot hide', async () => {
+    await writeFile(join(fixture.clone, '.env.production'), 'SECRET=1\n');
+    git(fixture.clone, 'add', '--force', '.env.production');
+    git(fixture.clone, 'commit', '--quiet', '-m', 'add env');
+    git(fixture.clone, 'push', '--quiet', 'origin', 'main');
+    await ops.fetch();
+    await ops.removeWorktree(worktree);
+    await ops.createWorktree(worktree, branch);
+
+    git(worktree, 'mv', '.env.production', 'prod-settings.txt');
+    git(worktree, 'commit', '--quiet', '-m', 'innocent rename');
+    expect((await ops.changedFiles(worktree)).sort()).toEqual(['.env.production', 'prod-settings.txt']);
+  });
+
+  it('returns non-ASCII paths unquoted', async () => {
+    await mkdir(join(worktree, 'configuração'));
+    await writeFile(join(worktree, 'configuração', '.env'), 'X=1\n');
+    expect(await ops.dirtyFiles(worktree)).toEqual(['configuração/.env']);
+    git(worktree, 'add', '--force', 'configuração/.env');
+    git(worktree, 'commit', '--quiet', '-m', 'x');
+    expect(await ops.changedFiles(worktree)).toEqual(['configuração/.env']);
   });
 
   it('pushes only the agent branch', async () => {

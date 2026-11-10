@@ -30,11 +30,9 @@ export class GitError extends Error {
 
 const GIT_TIMEOUT_MS = 5 * 60_000;
 
-function lines(output: string): string[] {
-  return output
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0);
+/** NUL-separated output (-z): paths come raw, never quoted or escaped. */
+function nulSeparated(output: string): string[] {
+  return output.split('\0').filter((entry) => entry.length > 0);
 }
 
 export function createGit(exec: Exec, settings: GitSettings): GitOps {
@@ -68,13 +66,14 @@ export function createGit(exec: Exec, settings: GitSettings): GitOps {
     },
 
     async dirtyFiles(worktree) {
-      const output = await git(worktree, ['status', '--porcelain=v1', '--untracked-files=all']);
-      return lines(output).map((line) => line.slice(3));
+      const output = await git(worktree, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--no-renames']);
+      return nulSeparated(output).map((entry) => entry.slice(3));
     },
 
     async changedFiles(worktree) {
-      const output = await git(worktree, ['diff', '--name-only', `${baseRef}...HEAD`]);
-      return lines(output);
+      // --no-renames: a rename shows as delete + add, so the source path of a moved secret is still checked.
+      const output = await git(worktree, ['diff', '--name-only', '-z', '--no-renames', `${baseRef}...HEAD`]);
+      return nulSeparated(output);
     },
 
     async push(worktree, branch) {
