@@ -50,7 +50,7 @@ agente com evidência objetiva — nunca a IA.**
 
 ## Stack
 
-Node.js 20+ · TypeScript strict (`noUncheckedIndexedAccess`) · Zod na borda ·
+Node.js 22+ · TypeScript strict (`noUncheckedIndexedAccess`) · Zod na borda ·
 Vitest · tsx. Sem framework de agentes: o agente já é o Claude Code.
 
 ## Arquitetura

@@ -4,7 +4,7 @@
 # It holds tools only: the repository, the contract directory and a throwaway HOME are
 # bind-mounted per run, and the container runs as the host user with a read-only root.
 # Add here whatever the target project's gates need (another Node version, Python, a CA).
-FROM node:20-bookworm-slim
+FROM node:22-bookworm-slim
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git ca-certificates \

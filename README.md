@@ -290,7 +290,7 @@ instruções erradas.
 
 ## Uso
 
-Requisitos: Node.js 20+, git 2.29+ e o
+Requisitos: Node.js 22+, git 2.29+ e o
 [Claude Code](https://claude.com/claude-code) instalado na máquina que roda o
 poll. Como o agente roda com um `HOME` vazio, a autenticação vem do ambiente:
 `ANTHROPIC_API_KEY`, ou `CLAUDE_CODE_OAUTH_TOKEN` gerado com
