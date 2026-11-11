@@ -347,8 +347,11 @@ aprovada, com print (REQ-101); uma aprovada mas ambígua, que deve terminar em
 
 ```bash
 npm run check            # typecheck + 183 testes, sem Docker
-npm run test:container   # 5 testes de integração com Docker real (opt-in)
+npm run test:container   # 5 testes de integração com Docker real
 ```
+
+O CI roda os dois a cada push: `check` no Node 22 e no 24, e os testes de
+container num job separado.
 
 - **Unitários** para cada peça: a função `decide` em todas as combinações, o
   contrato do runner (crash, timeout, status inválido), o prompt (variações da
